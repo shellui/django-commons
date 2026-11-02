@@ -28,3 +28,7 @@ See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog
 ### ✨ Feature
 
 - First release of `shellui-django` with the shared MCP module (OpenAPI tools, write gate, revocation helpers, streamable HTTP server).
+
+### 📚 Documentation
+
+- Add package README and `docs/` guides for the MCP and testing modules.
