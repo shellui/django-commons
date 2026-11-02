@@ -1,6 +1,6 @@
 [project]
 name = "shellui-django"
-version = "0.1.1"
+version = "0.2.0"
 description = "Shared Django libraries for Shellui services"
 readme = "README.md"
 license = "MIT"
@@ -36,6 +36,7 @@ mcp = [
     "cryptography>=50.0.0",
     "djangorestframework-simplejwt==5.5.1",
     "pyjwt>=2.14.0",
+    "requests>=2.32.0",
 ]
 
 [dependency-groups]

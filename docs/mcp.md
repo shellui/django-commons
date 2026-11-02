@@ -45,6 +45,45 @@ Supported JSON-RPC methods:
 - `tools/list` returns public tool metadata (internal `_meta` is stripped).
 - `tools/call` runs one tool.
 
+### Aggregating gateway (`shellui_django.mcp.gateway`)
+
+Use `AggregatingMcpServer` when one MCP endpoint should expose tools from several Shellui services (for example the ai-service gateway). It subclasses `McpServer`: local tools still run through the normal OpenAPI path (write gate, approvals, call logs). Remote tools are discovered and invoked over HTTP on each downstream service's `/mcp` URL.
+
+```text
+Agent JWT  -->  Gateway /mcp (AggregatingMcpServer)
+                      |
+        tools/list ----+---- local OpenAPI tools
+                      |
+                      +---- HTTP tools/list per allowed downstream service
+                      |
+        tools/call -----+---- local: super().handle (unchanged)
+                      |
+                      +---- HTTP tools/call on configured service URL
+```
+
+Wire the gateway with `McpGatewayConfig`:
+
+| Field | Role |
+|-------|------|
+| `get_service_urls` | Callable returning `{service_id: mcp_url}` from server config only (never from client input). |
+| `resolve_agent` | Load the agent row for `agent_id` + `company_id` in claims; return `None` when missing. |
+| `mint_downstream_token` | Issue an RS256 access token for the agent with the same claims as the outer token and `aud` set to the target MCP resource URL ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html)). |
+| `local_service_id` | Service id for tools handled locally (must match `service_name` on the server). |
+| `tools_cache_ttl_seconds` | Cache TTL for downstream tool catalogs and route map (default 30). |
+| `downstream_timeout_seconds` | HTTP timeout for downstream MCP calls (default 5). |
+| `instructions_title` | First line of `initialize` instructions (default `Shellui MCP gateway.`). |
+| `cache` | Optional cache backend (defaults to Django's cache). |
+
+Behavior:
+
+- **`tools/list`**: Merges local tools with each allowed downstream catalog. Allowed means the service id is in both JWT `scope` and the agent's `services_allowed` list. Downstream list failures omit that service only.
+- **Tool names**: Downstream tools keep their name when unique. Collisions become `{service_id}__{name}` (then `{service_id}__{name}__gateway` if still colliding).
+- **`tools/call`**: Routes using a short-lived cache keyed by exported tool name. Forwards JSON-RPC to the configured URL with a minted downstream token. Does not re-run approvals or execute writes on behalf of downstream services.
+- **`initialize`**: Returns `instructions` listing connected services for the agent.
+- **Logging**: Logs service id, tool name, HTTP status, and exception types only. Never logs bearer tokens or tool arguments.
+
+Helpers exported for host wiring and tests: `McpGatewayConfig`, `AggregatingMcpServer`, `merge_tool_catalog`, `gateway_instructions`, `public_mcp_tools`, `scope_service_ids`, `service_allowed`.
+
 ### Routing and path parameters
 
 OpenAPI paths like `/api/v1/companies/{company_id}/items/` require a `path_params` object with exactly those keys. Values are URL-encoded. Slashes, braces, and empty values are rejected to block path injection.
