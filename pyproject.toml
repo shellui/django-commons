@@ -1,6 +1,6 @@
 [project]
 name = "shellui-django"
-version = "0.2.2"
+version = "0.3.0"
 description = "Shared Django libraries for Shellui services"
 readme = "README.md"
 license = "MIT"
