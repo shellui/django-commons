@@ -67,7 +67,7 @@ Wire the gateway with `McpGatewayConfig`:
 |-------|------|
 | `get_service_urls` | Callable returning `{service_id: mcp_url}` from server config only (never from client input). |
 | `resolve_agent` | Load the agent row for `agent_id` + `company_id` in claims; return `None` when missing. |
-| `mint_downstream_token` | Issue an RS256 access token for the agent with the same claims as the outer token and `aud` set to the target MCP resource URL ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html)). |
+| `mint_downstream_token` | Obtain an RS256 access token for the agent with `aud` set to the target MCP resource URL ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html)), typically by calling Identity with `sign_downstream_token_request` from `shellui_django.mcp.delegation`. |
 | `local_service_id` | Service id for tools handled locally (must match `service_name` on the server). |
 | `tools_cache_ttl_seconds` | Cache TTL for downstream tool catalogs and route map (default 30). |
 | `downstream_timeout_seconds` | HTTP timeout for downstream MCP calls (default 5). |
@@ -207,6 +207,22 @@ Other internal assertion helpers (SimpleJWT-signed unless noted):
 | `build_mcp_revocation_assertion` | `shellui-mcp-revocation` | `mcp.revocation.read` |
 
 Verify incoming assertions with `verify_mcp_internal_assertion`.
+
+### Downstream MCP token delegation (`shellui_django.mcp.delegation`)
+
+When the ai-service gateway (or another aggregating host) needs Identity to mint an RS256 agent access token for a downstream service `/mcp` URL, it signs a short-lived request JWT instead of minting that token locally.
+
+| Constant | Value |
+|----------|-------|
+| `DOWNSTREAM_TOKEN_AUDIENCE` | `shellui-mcp-downstream-token` |
+| `DOWNSTREAM_TOKEN_SCOPE` | `mcp.downstream_token.mint` |
+| `DOWNSTREAM_TOKEN_REQUEST_MAX_LIFETIME_SECONDS` | `60` |
+
+**Gateway (caller):** `sign_downstream_token_request(private_key_pem, kid, issuer, agent_id, company_id, resource, ttl)` with `ttl` from 1 to 60 seconds. Claims: `iss`, `aud`, `scope`, `agent_id`, `company_id`, `resource`, `jti`, `iat`, `exp`. Send the JWT as `Authorization: Bearer …` to Identity's downstream token mint endpoint together with the same `agent_id`, `company_id`, and `resource` in the JSON body.
+
+**Identity (verifier):** `verify_downstream_token_request(token, public_jwks_or_pem, expected_issuer)` accepts inline JWKS or a PEM public key, allows RS256 only (rejects HS* and `none`), enforces all required claims, caps lifetime at 60 seconds (with a small clock leeway), and returns the verified claims. Use `claims['jti']` to enforce single use. Never log the raw JWT.
+
+Raises `DownstreamTokenRequestError` on failure (check `.status`, default 401).
 
 ## Token verification (agent access tokens)
 
