@@ -23,6 +23,20 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.2.0] - 2026-11-02
+
+### ✨ Feature
+
+- Add `shellui_django.mcp.gateway`: `AggregatingMcpServer` merges downstream `tools/list` and forwards `tools/call` with service-scoped RS256 tokens (`aud` = `{service}/mcp`). Host apps inject the service URL map, agent lookup, and token minting.
+
+### 📚 Documentation
+
+- Document the MCP aggregating gateway in `docs/mcp.md`.
+
+### 🏗 Chore
+
+- PyPI metadata: license file, classifiers, keywords and project links.
+
 ## [0.1.0] - 2026-11-02
 
 ### ✨ Feature
