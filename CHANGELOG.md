@@ -23,7 +23,7 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
-## [0.2.2] - 2026-11-02
+## [0.3.0] - 2026-11-02
 
 ### ✨ Feature
 
