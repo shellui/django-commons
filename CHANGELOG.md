@@ -23,6 +23,12 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.1.1] - yyyy-mm-dd
+
+### 🏗 Chore
+
+- PyPI metadata: license file, classifiers, keywords and project links.
+
 ## [0.1.0] - 2026-11-02
 
 ### ✨ Feature

@@ -1,15 +1,35 @@
 [project]
 name = "shellui-django"
-version = "0.1.0"
+version = "0.1.1"
 description = "Shared Django libraries for Shellui services"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["django", "djangorestframework", "mcp", "shellui"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: Django",
+    "Framework :: Django :: 6.0",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Internet :: WWW/HTTP",
+]
 requires-python = ">=3.14"
 authors = [{ name = "Sébastien Barbier" }]
 dependencies = [
     "django==6.0.8",
     "djangorestframework==3.18.2",
 ]
+
+[project.urls]
+Homepage = "https://shellui.com"
+Source = "https://github.com/shellui/django-commons"
+Documentation = "https://github.com/shellui/django-commons/tree/main/docs"
+Changelog = "https://github.com/shellui/django-commons/blob/main/CHANGELOG.md"
+Issues = "https://github.com/shellui/django-commons/issues"
 
 [project.optional-dependencies]
 mcp = [
