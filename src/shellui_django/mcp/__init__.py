@@ -1,6 +1,14 @@
 """MCP server layer for Shellui Django services."""
 
 from shellui_django.mcp.decorators import mcp_expose_tool
+from shellui_django.mcp.delegation import (
+    DOWNSTREAM_TOKEN_AUDIENCE,
+    DOWNSTREAM_TOKEN_REQUEST_MAX_LIFETIME_SECONDS,
+    DOWNSTREAM_TOKEN_SCOPE,
+    DownstreamTokenRequestError,
+    sign_downstream_token_request,
+    verify_downstream_token_request,
+)
 from shellui_django.mcp.internal import (
     APPROVAL_AUDIENCE,
     APPROVAL_SCOPE,
@@ -15,6 +23,12 @@ from shellui_django.mcp.internal import (
 
 __all__ = [
     'mcp_expose_tool',
+    'DOWNSTREAM_TOKEN_AUDIENCE',
+    'DOWNSTREAM_TOKEN_REQUEST_MAX_LIFETIME_SECONDS',
+    'DOWNSTREAM_TOKEN_SCOPE',
+    'DownstreamTokenRequestError',
+    'sign_downstream_token_request',
+    'verify_downstream_token_request',
     'APPROVAL_AUDIENCE',
     'APPROVAL_SCOPE',
     'REVOCATION_CACHE_SECONDS',
