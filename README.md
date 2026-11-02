@@ -16,7 +16,7 @@ pip install shellui-django
 pip install shellui-django[mcp]   # MCP server helpers
 ```
 
-Requires Python 3.14+, Django, and DRF. The `[mcp]` extra adds PyJWT, cryptography, and SimpleJWT for MCP auth and signed internal calls.
+Requires Python 3.14+, Django, and DRF. The `[mcp]` extra adds PyJWT, cryptography, SimpleJWT, and requests for MCP auth, signed internal calls, and the aggregating gateway.
 
 ## Modules
 
