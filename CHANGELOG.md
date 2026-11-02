@@ -33,8 +33,6 @@ See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog
 
 - Document the MCP aggregating gateway in `docs/mcp.md`.
 
-## [0.1.1] - 2026-11-02
-
 ### 🏗 Chore
 
 - PyPI metadata: license file, classifiers, keywords and project links.
