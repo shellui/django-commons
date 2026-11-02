@@ -1,5 +1,10 @@
 # shellui-django
 
+[![CI](https://github.com/shellui/django-commons/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shellui/django-commons/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/shellui-django)](https://pypi.org/project/shellui-django/)
+[![Python](https://img.shields.io/pypi/pyversions/shellui-django)](https://pypi.org/project/shellui-django/)
+[![License: MIT](https://img.shields.io/github/license/shellui/django-commons)](LICENSE)
+
 Shared Django libraries for [Shellui](https://shellui.com) backend services: identity, storage, hosting, email, and saas.
 
 ## Principles
