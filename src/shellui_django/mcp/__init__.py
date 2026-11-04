@@ -12,6 +12,7 @@ from shellui_django.mcp.delegation import (
 from shellui_django.mcp.internal import (
     APPROVAL_AUDIENCE,
     APPROVAL_SCOPE,
+    INTERNAL_ASSERTION_MAX_LIFETIME_SECONDS,
     REVOCATION_CACHE_SECONDS,
     REVOCATION_LIST_SCOPE,
     build_mcp_approval_assertion,
@@ -19,6 +20,7 @@ from shellui_django.mcp.internal import (
     parse_trusted_revocation_poll_response,
     verify_mcp_internal_assertion,
     verify_mcp_revocation_list_response,
+    verify_rs256_mcp_assertion,
 )
 
 __all__ = [
@@ -31,6 +33,7 @@ __all__ = [
     'verify_downstream_token_request',
     'APPROVAL_AUDIENCE',
     'APPROVAL_SCOPE',
+    'INTERNAL_ASSERTION_MAX_LIFETIME_SECONDS',
     'REVOCATION_CACHE_SECONDS',
     'REVOCATION_LIST_SCOPE',
     'build_mcp_approval_assertion',
@@ -38,4 +41,5 @@ __all__ = [
     'parse_trusted_revocation_poll_response',
     'verify_mcp_internal_assertion',
     'verify_mcp_revocation_list_response',
+    'verify_rs256_mcp_assertion',
 ]
