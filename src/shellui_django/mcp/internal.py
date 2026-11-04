@@ -142,11 +142,11 @@ def build_mcp_revocation_list_response_assertion(
     }
     try:
         return _encode_rs256_assertion(claims)
-    except InternalAssertionError:
+    except InternalAssertionError as exc:
         raise InternalAssertionError(
             'Revocation list signing is not configured.',
             status=503,
-        )
+        ) from exc
 
 
 def build_mcp_revocation_assertion(
