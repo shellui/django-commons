@@ -68,6 +68,18 @@ def _public_key_from_jwk(jwk: dict[str, Any]):
     return RSAAlgorithm.from_jwk(json.dumps(jwk))
 
 
+def resolve_public_verification_key(token: str, public_jwks_or_pem: dict[str, Any] | str):
+    """Return a verification key from inline JWKS, a fetched document, or a PEM string."""
+    if isinstance(public_jwks_or_pem, str):
+        pem = public_jwks_or_pem.strip()
+        if not pem:
+            raise IdentityJwksError('Verification key is required.')
+        return pem
+    if isinstance(public_jwks_or_pem, dict):
+        return resolve_verification_key(token, public_jwks_or_pem)
+    raise IdentityJwksError('public_jwks_or_pem must be a PEM string or JWKS document.')
+
+
 def resolve_verification_key(token: str, jwks_document: dict[str, Any]):
     header = jwt.get_unverified_header(token)
     kid = header.get('kid')

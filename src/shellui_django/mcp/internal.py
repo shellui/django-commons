@@ -4,15 +4,27 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import jwt
 from django.conf import settings
 from rest_framework_simplejwt.settings import api_settings
 
+INTERNAL_ASSERTION_MAX_LIFETIME_SECONDS = 60
+INTERNAL_ASSERTION_LEEWAY_SECONDS = 5
+
 
 def _identity_issuer() -> str:
     return (api_settings.ISSUER or getattr(settings, 'JWT_ISSUER', None) or '').strip()
+
+
+def _service_issuer(explicit: str | None = None) -> str:
+    if explicit and explicit.strip():
+        return explicit.strip().rstrip('/')
+    configured = getattr(settings, 'JWT_ISSUER', None) or api_settings.ISSUER or ''
+    return str(configured).strip().rstrip('/')
+
 
 APPROVAL_AUDIENCE = 'shellui-mcp-approval'
 APPROVAL_SCOPE = 'mcp.approval.create'
@@ -32,12 +44,45 @@ class InternalAssertionError(Exception):
         self.status = status
 
 
-def _encode_assertion(claims: dict[str, Any]) -> str:
-    headers = {}
-    kid = getattr(settings, 'JWT_ACTIVE_KEY_ID', '')
-    if kid:
-        headers['kid'] = kid
-    token = jwt.encode(claims, api_settings.SIGNING_KEY, algorithm=api_settings.ALGORITHM, headers=headers or None)
+def _signing_material(
+    *,
+    private_key_pem: str | None = None,
+    kid: str | None = None,
+) -> tuple[str, str]:
+    if private_key_pem and private_key_pem.strip():
+        pem = private_key_pem.strip()
+        key_id = (kid or '').strip() or getattr(settings, 'JWT_ACTIVE_KEY_ID', '') or ''
+        return pem, key_id
+    signing = getattr(settings, 'JWT_SIGNING_KEY', None)
+    if signing is None:
+        raise InternalAssertionError(
+            'Service assertion signing is not configured.',
+            status=503,
+        )
+    pem = getattr(signing, 'private_pem', None) or ''
+    if not pem:
+        raise InternalAssertionError(
+            'Service assertion signing is not configured.',
+            status=503,
+        )
+    key_id = (
+        (kid or '').strip()
+        or getattr(signing, 'kid', None)
+        or getattr(settings, 'JWT_ACTIVE_KEY_ID', '')
+        or ''
+    )
+    return pem, key_id
+
+
+def _encode_rs256_assertion(
+    claims: dict[str, Any],
+    *,
+    private_key_pem: str | None = None,
+    kid: str | None = None,
+) -> str:
+    pem, key_id = _signing_material(private_key_pem=private_key_pem, kid=kid)
+    headers: dict[str, str] | None = {'kid': key_id} if key_id else None
+    token = jwt.encode(claims, pem, algorithm='RS256', headers=headers)
     return token.decode('utf-8') if isinstance(token, bytes) else token
 
 
@@ -50,10 +95,13 @@ def build_mcp_approval_assertion(
     arguments_hash: str,
     audience_url: str,
     lifetime_seconds: int = 60,
+    private_key_pem: str | None = None,
+    kid: str | None = None,
+    issuer: str | None = None,
 ) -> str:
     now = int(time.time())
     claims = {
-        'iss': api_settings.ISSUER or '',
+        'iss': _service_issuer(issuer),
         'aud': APPROVAL_AUDIENCE,
         'sub': f'agent:{agent_id}',
         'scope': APPROVAL_SCOPE,
@@ -67,20 +115,7 @@ def build_mcp_approval_assertion(
         'exp': now + lifetime_seconds,
         'jti': uuid.uuid4().hex,
     }
-    return _encode_assertion(claims)
-
-
-def _encode_identity_issued_rs256(claims: dict[str, Any]) -> str | None:
-    signing = getattr(settings, 'JWT_SIGNING_KEY', None)
-    if signing is None:
-        return None
-    private_pem = getattr(signing, 'private_pem', None)
-    if not private_pem:
-        return None
-    kid = getattr(signing, 'kid', None) or getattr(settings, 'JWT_ACTIVE_KEY_ID', '') or ''
-    headers = {'kid': kid} if kid else None
-    token = jwt.encode(claims, private_pem, algorithm='RS256', headers=headers)
-    return token.decode('utf-8') if isinstance(token, bytes) else token
+    return _encode_rs256_assertion(claims, private_key_pem=private_key_pem, kid=kid)
 
 
 def build_mcp_revocation_list_response_assertion(
@@ -105,19 +140,26 @@ def build_mcp_revocation_list_response_assertion(
         'exp': now + lifetime_seconds,
         'jti': uuid.uuid4().hex,
     }
-    rs256 = _encode_identity_issued_rs256(claims)
-    if not rs256:
+    try:
+        return _encode_rs256_assertion(claims)
+    except InternalAssertionError:
         raise InternalAssertionError(
             'Revocation list signing is not configured.',
             status=503,
         )
-    return rs256
 
 
-def build_mcp_revocation_assertion(*, audience_url: str, lifetime_seconds: int = 60) -> str:
+def build_mcp_revocation_assertion(
+    *,
+    audience_url: str,
+    lifetime_seconds: int = 60,
+    private_key_pem: str | None = None,
+    kid: str | None = None,
+    issuer: str | None = None,
+) -> str:
     now = int(time.time())
     claims = {
-        'iss': api_settings.ISSUER or '',
+        'iss': _service_issuer(issuer),
         'aud': REVOCATION_AUDIENCE,
         'sub': 'service',
         'scope': REVOCATION_SCOPE,
@@ -126,13 +168,20 @@ def build_mcp_revocation_assertion(*, audience_url: str, lifetime_seconds: int =
         'exp': now + lifetime_seconds,
         'jti': uuid.uuid4().hex,
     }
-    return _encode_assertion(claims)
+    return _encode_rs256_assertion(claims, private_key_pem=private_key_pem, kid=kid)
 
 
-def build_mcp_call_log_assertion(*, audience_url: str, lifetime_seconds: int = 60) -> str:
+def build_mcp_call_log_assertion(
+    *,
+    audience_url: str,
+    lifetime_seconds: int = 60,
+    private_key_pem: str | None = None,
+    kid: str | None = None,
+    issuer: str | None = None,
+) -> str:
     now = int(time.time())
     claims = {
-        'iss': api_settings.ISSUER or '',
+        'iss': _service_issuer(issuer),
         'aud': CALL_LOG_AUDIENCE,
         'sub': 'service',
         'scope': CALL_LOG_SCOPE,
@@ -141,42 +190,116 @@ def build_mcp_call_log_assertion(*, audience_url: str, lifetime_seconds: int = 6
         'exp': now + lifetime_seconds,
         'jti': uuid.uuid4().hex,
     }
-    return _encode_assertion(claims)
+    return _encode_rs256_assertion(claims, private_key_pem=private_key_pem, kid=kid)
 
 
-def verify_mcp_internal_assertion(
-    raw_token: str,
-    *,
-    expected_audience: str,
-    expected_scope: str,
-    expected_target: str | None = None,
-) -> dict[str, Any]:
+def _normalize_bearer_token(raw_token: str) -> str:
     if not raw_token or not raw_token.strip():
         raise InternalAssertionError('Missing assertion.')
     token = raw_token.strip()
     if token.lower().startswith('bearer '):
         token = token[7:].strip()
+    if not token:
+        raise InternalAssertionError('Missing assertion.')
+    return token
+
+
+def _assert_lifetime_within_limit(claims: dict[str, Any], *, max_lifetime_seconds: int) -> None:
+    try:
+        iat = int(claims['iat'])
+        exp = int(claims['exp'])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InternalAssertionError('Invalid iat or exp.') from exc
+    if exp <= iat:
+        raise InternalAssertionError('Assertion lifetime is invalid.')
+    if exp - iat > max_lifetime_seconds:
+        raise InternalAssertionError('Assertion lifetime exceeds the maximum allowed.')
+
+
+def verify_rs256_mcp_assertion(
+    raw_token: str,
+    public_jwks_or_pem: dict[str, Any] | str,
+    *,
+    expected_issuer: str,
+    expected_audience: str,
+    expected_scope: str,
+    expected_target: str | None = None,
+    register_jti: Callable[[str], bool] | None = None,
+    max_lifetime_seconds: int = INTERNAL_ASSERTION_MAX_LIFETIME_SECONDS,
+) -> dict[str, Any]:
+    """Verify a service-signed RS256 internal MCP assertion using caller JWKS or PEM."""
+    from shellui_django.mcp.identity_jwks import IdentityJwksError, resolve_public_verification_key
+
+    token = _normalize_bearer_token(raw_token)
+    issuer = (expected_issuer or '').strip().rstrip('/')
+    if not issuer:
+        raise InternalAssertionError('expected_issuer is required.')
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError as exc:
+        raise InternalAssertionError('Invalid assertion.') from exc
+    alg = str(header.get('alg') or '')
+    if alg != 'RS256':
+        raise InternalAssertionError('Internal MCP assertion must use RS256.')
+    try:
+        key = resolve_public_verification_key(token, public_jwks_or_pem)
+    except IdentityJwksError as exc:
+        raise InternalAssertionError(str(exc)) from exc
     try:
         payload = jwt.decode(
             token,
-            api_settings.SIGNING_KEY,
-            algorithms=[api_settings.ALGORITHM],
+            key=key,
+            algorithms=['RS256'],
             audience=expected_audience,
-            issuer=api_settings.ISSUER or None,
-            options={'require': ['exp', 'iat', 'sub', 'scope']},
+            issuer=issuer,
+            leeway=INTERNAL_ASSERTION_LEEWAY_SECONDS,
+            options={'require': ['exp', 'iat', 'sub', 'scope', 'jti']},
         )
     except jwt.PyJWTError as exc:
         raise InternalAssertionError('Invalid assertion.') from exc
     scope = str(payload.get('scope') or '')
     if scope != expected_scope:
         raise InternalAssertionError('Assertion scope mismatch.')
+    aud = payload.get('aud')
+    if isinstance(aud, list):
+        if expected_audience not in aud:
+            raise InternalAssertionError('Assertion audience mismatch.')
+    elif str(aud or '') != expected_audience:
+        raise InternalAssertionError('Assertion audience mismatch.')
     if expected_target:
         target = str(payload.get('target') or '').rstrip('/')
         if target and target != expected_target.rstrip('/'):
             raise InternalAssertionError('Assertion target mismatch.')
-    if payload.get('agent_id') or payload.get('pat_id') or payload.get('user_id'):
-        pass
+    _assert_lifetime_within_limit(payload, max_lifetime_seconds=max_lifetime_seconds)
+    jti = str(payload.get('jti') or '').strip()
+    if not jti:
+        raise InternalAssertionError('Missing jti.')
+    if register_jti is not None and not register_jti(jti):
+        raise InternalAssertionError('Assertion replay detected.')
     return payload
+
+
+def verify_mcp_internal_assertion(
+    raw_token: str,
+    public_jwks_or_pem: dict[str, Any] | str,
+    *,
+    expected_issuer: str,
+    expected_audience: str,
+    expected_scope: str,
+    expected_target: str | None = None,
+    register_jti: Callable[[str], bool] | None = None,
+    max_lifetime_seconds: int = INTERNAL_ASSERTION_MAX_LIFETIME_SECONDS,
+) -> dict[str, Any]:
+    return verify_rs256_mcp_assertion(
+        raw_token,
+        public_jwks_or_pem,
+        expected_issuer=expected_issuer,
+        expected_audience=expected_audience,
+        expected_scope=expected_scope,
+        expected_target=expected_target,
+        register_jti=register_jti,
+        max_lifetime_seconds=max_lifetime_seconds,
+    )
 
 
 def _revocation_list_assertion_token(payload: dict[str, Any]) -> str:

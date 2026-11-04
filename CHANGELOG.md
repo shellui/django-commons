@@ -23,6 +23,17 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.4.0] - 2026-11-04
+
+### 🔒 Security
+
+- Service-to-identity MCP internal assertions (`build_mcp_approval_assertion`, `build_mcp_call_log_assertion`, `build_mcp_revocation_assertion`) are signed RS256 with the caller `JWT_SIGNING_KEY` and caller issuer (`JWT_ISSUER` or SimpleJWT `ISSUER`), not SimpleJWT HMAC keys.
+- `verify_mcp_internal_assertion` / `verify_rs256_mcp_assertion` verify RS256 against caller JWKS or PEM (`expected_issuer`, audience, scope, target, lifetime, optional `register_jti`). HS256 and `alg: none` are rejected; verification never uses a private key.
+
+### 🚨 Changed
+
+- `verify_mcp_internal_assertion` now requires `public_jwks_or_pem` and `expected_issuer` (breaking for Identity and other verifiers).
+
 ## [0.3.0] - 2026-11-02
 
 ### ✨ Feature
