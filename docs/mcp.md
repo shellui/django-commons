@@ -107,16 +107,17 @@ The MCP code reads these Django settings. Do not rely on settings not listed her
 | `AUTH_RATE_LIMIT_ENABLED` | `True` | When false, per-agent MCP rate limiting is skipped. |
 | `MCP_RATE_LIMITS` | `{}` | Rate limit config. Uses `limits['mcp_agent']` or `limits['default']` or `{limit: 120, window: 60}`. |
 | `JWT_ISSUER` | none | Fallback Identity issuer when SimpleJWT `ISSUER` is empty (revocation list verification). |
-| `JWT_ACTIVE_KEY_ID` | `''` | `kid` header on service-issued internal JWTs. |
-| `JWT_SIGNING_KEY` | none | Object with `private_pem` and optional `kid`. Required on Identity to sign revocation list responses (`build_mcp_revocation_list_response_assertion`). |
+| `JWT_ISSUER` | none | Public issuer URL on RS256 service-issued internal assertions (`build_mcp_*_assertion`); preferred over SimpleJWT `ISSUER`. |
+| `JWT_ACTIVE_KEY_ID` | `''` | Fallback `kid` when `JWT_SIGNING_KEY.kid` is unset. |
+| `JWT_SIGNING_KEY` | none | Object with `private_pem` and optional `kid`. Required for service-issued internal assertions and on Identity for revocation list responses. |
 
 ### SimpleJWT (`SIMPLE_JWT` / `api_settings`)
 
 | Setting | Used for |
 |---------|----------|
-| `ISSUER` | Issuer on service-issued internal assertions; preferred over `JWT_ISSUER`. |
-| `SIGNING_KEY` | HMAC (or configured algorithm) key for `build_mcp_*_assertion` and `verify_mcp_internal_assertion`. |
-| `ALGORITHM` | Algorithm for those internal JWTs. |
+| `ISSUER` | Fallback issuer on service-issued internal assertions when `JWT_ISSUER` is empty. |
+
+Service-issued internal assertions and Identity verification never use SimpleJWT `SIGNING_KEY` or `ALGORITHM`.
 
 Agent access tokens are verified in your MCP view (not inside `McpServer`). Use RS256 and Identity JWKS via `decode_identity_rs256_jwt` and audience checks via `access_token_audience_matches` (see below).
 
@@ -199,14 +200,14 @@ When approval is needed, `McpServer` builds an `approval_payload` (agent, compan
 
 Wire these callbacks to your Identity approval-state and consume HTTP endpoints. Use `build_mcp_approval_assertion` when the service calls Identity to create an approval (audience `shellui-mcp-approval`, scope `mcp.approval.create`).
 
-Other internal assertion helpers (SimpleJWT-signed unless noted):
+Other internal assertion helpers (RS256 via `JWT_SIGNING_KEY` or explicit `private_key_pem` / `kid` / `issuer` kwargs):
 
 | Helper | Audience | Scope |
 |--------|----------|-------|
 | `build_mcp_call_log_assertion` | `shellui-mcp-call-log` | `mcp.call_log.create` |
 | `build_mcp_revocation_assertion` | `shellui-mcp-revocation` | `mcp.revocation.read` |
 
-Verify incoming assertions with `verify_mcp_internal_assertion`.
+Verify incoming assertions with `verify_mcp_internal_assertion` (alias of `verify_rs256_mcp_assertion`). Pass the caller JWKS document or public PEM, the expected caller issuer (must match `iss`), audience, scope, and Identity public URL as `expected_target`. RS256 only; optional `register_jti` for replay protection.
 
 ### Downstream MCP token delegation (`shellui_django.mcp.delegation`)
 

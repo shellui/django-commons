@@ -91,19 +91,12 @@ def _normalize_bearer_token(raw_token: str) -> str:
 
 
 def _resolve_verification_key(token: str, public_jwks_or_pem: dict[str, Any] | str) -> Any:
-    if isinstance(public_jwks_or_pem, str):
-        pem = public_jwks_or_pem.strip()
-        if not pem:
-            raise DownstreamTokenRequestError('Verification key is required.')
-        return pem
-    if isinstance(public_jwks_or_pem, dict):
-        from shellui_django.mcp.identity_jwks import IdentityJwksError, resolve_verification_key
+    from shellui_django.mcp.identity_jwks import IdentityJwksError, resolve_public_verification_key
 
-        try:
-            return resolve_verification_key(token, public_jwks_or_pem)
-        except IdentityJwksError as exc:
-            raise DownstreamTokenRequestError(str(exc)) from exc
-    raise DownstreamTokenRequestError('public_jwks_or_pem must be a PEM string or JWKS document.')
+    try:
+        return resolve_public_verification_key(token, public_jwks_or_pem)
+    except IdentityJwksError as exc:
+        raise DownstreamTokenRequestError(str(exc)) from exc
 
 
 def _assert_lifetime_within_limit(claims: dict[str, Any]) -> None:
