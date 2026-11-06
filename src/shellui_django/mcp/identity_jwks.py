@@ -23,6 +23,27 @@ class IdentityJwksError(Exception):
     pass
 
 
+def jwt_unix_timestamp_claim_strict(value: Any, *, field: str) -> int:
+    """``iat`` / ``exp`` after JWT decode: non-negative int, or digit-only string (PyJWT quirk).
+
+    Rejects bool, float, and non-digit strings so values are not confused via ``int()`` coercion.
+    """
+    if isinstance(value, bool):
+        raise IdentityJwksError(f'{field} must be a Unix timestamp.')
+    if isinstance(value, float):
+        raise IdentityJwksError(f'{field} must be a Unix timestamp.')
+    if isinstance(value, int):
+        if value < 0:
+            raise IdentityJwksError(f'{field} must be non-negative.')
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or not s.isdigit():
+            raise IdentityJwksError(f'{field} must be a Unix timestamp.')
+        return int(s)
+    raise IdentityJwksError(f'{field} must be a Unix timestamp.')
+
+
 def identity_jwks_url_for_issuer(issuer: str) -> str:
     base = (issuer or '').strip().rstrip('/')
     if not base:
@@ -104,17 +125,23 @@ def decode_identity_rs256_jwt(
     jwks_url: str | None = None,
     jwks: dict[str, Any] | None = None,
     timeout: float = 10.0,
-    require_claims: tuple[str, ...] = ('exp', 'iat', 'sub', 'scope'),
+    require_claims: tuple[str, ...] = (),
 ) -> dict[str, Any]:
+    """Verify an Identity-issued RS256 JWT against JWKS.
+
+    Always requires ``exp``, ``iat``, ``sub``, ``scope``, and ``jti``. Names in
+    ``require_claims`` add further required claims (union, never a substitute).
+    Timestamp claims are normalized to strict non-negative integers after decode.
+    """
     header = jwt.get_unverified_header(token)
     if header.get('alg') != 'RS256':
         raise IdentityJwksError('Identity JWT must use RS256.')
     document = get_jwks_document(jwks_url=jwks_url, jwks=jwks, timeout=timeout)
     key = resolve_verification_key(token, document)
-    mandatory = {'exp', 'iat', 'sub', 'scope'}
+    mandatory = {'exp', 'iat', 'sub', 'scope', 'jti'}
     merged = sorted(mandatory.union(require_claims))
     try:
-        return jwt.decode(
+        claims = jwt.decode(
             token,
             key=key,
             algorithms=['RS256'],
@@ -125,3 +152,9 @@ def decode_identity_rs256_jwt(
         )
     except jwt.PyJWTError as exc:
         raise IdentityJwksError('Invalid Identity JWT.') from exc
+    try:
+        claims['iat'] = jwt_unix_timestamp_claim_strict(claims['iat'], field='iat')
+        claims['exp'] = jwt_unix_timestamp_claim_strict(claims['exp'], field='exp')
+    except KeyError as exc:
+        raise IdentityJwksError('Invalid Identity JWT.') from exc
+    return claims

@@ -13,6 +13,8 @@ import jwt
 from django.conf import settings
 from rest_framework_simplejwt.settings import api_settings
 
+from shellui_django.mcp.identity_jwks import IdentityJwksError, jwt_unix_timestamp_claim_strict
+
 INTERNAL_ASSERTION_MAX_LIFETIME_SECONDS = 60
 INTERNAL_ASSERTION_LEEWAY_SECONDS = 5
 REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS = 600
@@ -109,21 +111,11 @@ def _jwt_optional_int_claim(value: Any, *, field: str) -> int:
 
 
 def _jwt_unix_timestamp_claim(value: Any, *, field: str) -> int:
-    """``iat`` / ``exp`` after JWT decode: non-negative int, or digit-only string from legacy tokens."""
-    if isinstance(value, bool):
-        raise InternalAssertionError(f'{field} must be a Unix timestamp.')
-    if isinstance(value, float):
-        raise InternalAssertionError(f'{field} must be a Unix timestamp.')
-    if isinstance(value, int):
-        if value < 0:
-            raise InternalAssertionError(f'{field} must be non-negative.')
-        return value
-    if isinstance(value, str):
-        s = value.strip()
-        if not s or not s.isdigit():
-            raise InternalAssertionError(f'{field} must be a Unix timestamp.')
-        return int(s)
-    raise InternalAssertionError(f'{field} must be a Unix timestamp.')
+    """``iat`` / ``exp`` after JWT decode (same rules as ``jwt_unix_timestamp_claim_strict``)."""
+    try:
+        return jwt_unix_timestamp_claim_strict(value, field=field)
+    except IdentityJwksError as exc:
+        raise InternalAssertionError(str(exc)) from exc
 
 
 def _normalize_uuid_string(value: str | None, *, field: str) -> str:
@@ -338,12 +330,10 @@ def _normalize_bearer_token(raw_token: str) -> str:
 
 def _assert_lifetime_within_limit(claims: dict[str, Any], *, max_lifetime_seconds: int) -> None:
     try:
-        iat = int(claims['iat'])
-        exp = int(claims['exp'])
-    except (KeyError, TypeError, ValueError) as exc:
+        iat = _jwt_unix_timestamp_claim(claims['iat'], field='iat')
+        exp = _jwt_unix_timestamp_claim(claims['exp'], field='exp')
+    except KeyError as exc:
         raise InternalAssertionError('Invalid iat or exp.') from exc
-    if iat < 0 or exp < 0:
-        raise InternalAssertionError('Invalid iat or exp.')
     if exp <= iat:
         raise InternalAssertionError('Assertion lifetime is invalid.')
     if exp - iat > max_lifetime_seconds:
@@ -363,7 +353,7 @@ def _assert_identity_revocation_token_invariants(claims: dict[str, Any]) -> None
     if span > REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS:
         raise InternalAssertionError('Revocation list assertion lifetime exceeds the maximum allowed.')
     now = int(time.time())
-    # Mirror PyJWT exp/iat skew bounds used when decoding with ``INTERNAL_ASSERTION_LEEWAY_SECONDS``.
+    # Mirror PyJWT exp/iat skew bounds used when decoding the Identity JWT.
     if iat > now + INTERNAL_ASSERTION_LEEWAY_SECONDS:
         raise InternalAssertionError('Revocation list assertion iat is in the future.')
     if exp <= now - INTERNAL_ASSERTION_LEEWAY_SECONDS:
@@ -595,7 +585,6 @@ def verify_mcp_revocation_list_response(
             jwks_url=jwks_url,
             jwks=jwks,
             timeout=jwks_timeout,
-            require_claims=('exp', 'iat', 'sub', 'scope', 'jti'),
         )
     except IdentityJwksError as exc:
         raise InternalAssertionError(str(exc)) from exc

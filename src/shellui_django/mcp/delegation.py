@@ -8,6 +8,8 @@ from typing import Any
 
 import jwt
 
+from shellui_django.mcp.identity_jwks import IdentityJwksError, jwt_unix_timestamp_claim_strict
+
 DOWNSTREAM_TOKEN_AUDIENCE = 'shellui-mcp-downstream-token'
 DOWNSTREAM_TOKEN_SCOPE = 'mcp.downstream_token.mint'
 DOWNSTREAM_TOKEN_REQUEST_MAX_LIFETIME_SECONDS = 60
@@ -101,10 +103,12 @@ def _resolve_verification_key(token: str, public_jwks_or_pem: dict[str, Any] | s
 
 def _assert_lifetime_within_limit(claims: dict[str, Any]) -> None:
     try:
-        iat = int(claims['iat'])
-        exp = int(claims['exp'])
-    except (KeyError, TypeError, ValueError) as exc:
+        iat = jwt_unix_timestamp_claim_strict(claims['iat'], field='iat')
+        exp = jwt_unix_timestamp_claim_strict(claims['exp'], field='exp')
+    except KeyError as exc:
         raise DownstreamTokenRequestError('Invalid iat or exp.') from exc
+    except IdentityJwksError as exc:
+        raise DownstreamTokenRequestError(str(exc)) from exc
     if exp <= iat:
         raise DownstreamTokenRequestError('Token lifetime is invalid.')
     if exp - iat > DOWNSTREAM_TOKEN_REQUEST_MAX_LIFETIME_SECONDS:
