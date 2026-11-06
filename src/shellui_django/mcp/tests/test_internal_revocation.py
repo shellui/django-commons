@@ -458,6 +458,35 @@ class RevocationListJwksVerificationTests(unittest.TestCase):
                 jwks=self.jwks,
             )
 
+    def test_float_iat_rejected(self):
+        now = int(time.time())
+        claims = {
+            'iss': TEST_ISSUER,
+            'aud': REVOCATION_AUDIENCE,
+            'sub': 'identity',
+            'scope': REVOCATION_LIST_SCOPE,
+            'revoked_agent_ids': [],
+            'agents': [],
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'iat': float(now),
+            'exp': now + REVOCATION_CACHE_SECONDS,
+            'jti': uuid.uuid4().hex,
+        }
+        token = jwt.encode(claims, self.private_pem, algorithm='RS256', headers={'kid': self.kid})
+        token = token.decode('utf-8') if isinstance(token, bytes) else token
+        payload = {
+            'revoked_agent_ids': [],
+            'agents': [],
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'revocation_assertion': token,
+        }
+        with self.assertRaises(InternalAssertionError):
+            verify_mcp_revocation_list_response(
+                payload,
+                expected_issuer=TEST_ISSUER,
+                jwks=self.jwks,
+            )
+
     def test_exp_equals_iat_rejected(self):
         now = int(time.time())
         claims = {

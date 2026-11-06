@@ -108,6 +108,24 @@ def _jwt_optional_int_claim(value: Any, *, field: str) -> int:
     raise InternalAssertionError(f'{field} must be a non-negative integer.')
 
 
+def _jwt_unix_timestamp_claim(value: Any, *, field: str) -> int:
+    """``iat`` / ``exp`` after JWT decode: non-negative int, or digit-only string from legacy tokens."""
+    if isinstance(value, bool):
+        raise InternalAssertionError(f'{field} must be a Unix timestamp.')
+    if isinstance(value, float):
+        raise InternalAssertionError(f'{field} must be a Unix timestamp.')
+    if isinstance(value, int):
+        if value < 0:
+            raise InternalAssertionError(f'{field} must be non-negative.')
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or not s.isdigit():
+            raise InternalAssertionError(f'{field} must be a Unix timestamp.')
+        return int(s)
+    raise InternalAssertionError(f'{field} must be a Unix timestamp.')
+
+
 def _normalize_uuid_string(value: str | None, *, field: str) -> str:
     raw = str(value or '').strip()
     if not raw:
@@ -333,18 +351,23 @@ def _assert_lifetime_within_limit(claims: dict[str, Any], *, max_lifetime_second
 
 
 def _assert_identity_revocation_token_invariants(claims: dict[str, Any]) -> None:
-    """Clock and span checks after JWKS verification (defense in depth)."""
+    """Clock and span checks after JWKS verification (aligned with decode leeway)."""
     try:
-        iat = int(claims['iat'])
-        exp = int(claims['exp'])
-    except (KeyError, TypeError, ValueError) as exc:
+        iat = _jwt_unix_timestamp_claim(claims['iat'], field='iat')
+        exp = _jwt_unix_timestamp_claim(claims['exp'], field='exp')
+    except KeyError as exc:
         raise InternalAssertionError('Invalid iat or exp.') from exc
-    if iat < 0 or exp < 0:
-        raise InternalAssertionError('Invalid iat or exp.')
     if exp <= iat:
         raise InternalAssertionError('Revocation list assertion exp must be after iat.')
-    if exp - iat > REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS:
+    span = exp - iat
+    if span > REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS:
         raise InternalAssertionError('Revocation list assertion lifetime exceeds the maximum allowed.')
+    now = int(time.time())
+    # Mirror PyJWT exp/iat skew bounds used when decoding with ``INTERNAL_ASSERTION_LEEWAY_SECONDS``.
+    if iat > now + INTERNAL_ASSERTION_LEEWAY_SECONDS:
+        raise InternalAssertionError('Revocation list assertion iat is in the future.')
+    if exp <= now - INTERNAL_ASSERTION_LEEWAY_SECONDS:
+        raise InternalAssertionError('Revocation list assertion is expired.')
     jti = str(claims.get('jti') or '').strip()
     if not jti:
         raise InternalAssertionError('Missing jti.')

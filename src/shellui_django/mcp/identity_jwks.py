@@ -13,6 +13,8 @@ import jwt
 from jwt.algorithms import RSAAlgorithm
 
 _CACHE_TTL_SECONDS = 300
+# Match ``INTERNAL_ASSERTION_LEEWAY_SECONDS`` in ``internal`` for Identity JWT verification.
+IDENTITY_RS256_LEEWAY_SECONDS = 5
 _cache_lock = threading.Lock()
 _jwks_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -118,6 +120,7 @@ def decode_identity_rs256_jwt(
             algorithms=['RS256'],
             audience=audience,
             issuer=issuer,
+            leeway=IDENTITY_RS256_LEEWAY_SECONDS,
             options={'require': merged},
         )
     except jwt.PyJWTError as exc:
