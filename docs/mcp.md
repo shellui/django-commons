@@ -126,6 +126,7 @@ Agent access tokens are verified in your MCP view (not inside `McpServer`). Use 
 | Name | Value | Meaning |
 |------|-------|---------|
 | `REVOCATION_CACHE_SECONDS` | `30` | Default TTL in signed revocation list assertions. |
+| `REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS` | `600` | Hard cap on `exp - iat` and on positive `cache_seconds` in signed revocation list responses (10 minutes). |
 | JWKS in-memory cache | `300` s | TTL for fetched Identity JWKS documents in `identity_jwks`. |
 
 ## Tagging views and OpenAPI operations
@@ -176,9 +177,11 @@ Your MCP view must pass verified claims into `handle`. Claims read by this libra
 | `agent_id` | required | Identity of the agent. |
 | `company_id` | optional | Tenant id passed to revocation checks and approval payloads. |
 | `scope` | required | Space-separated service ids; must include `service_name`. |
-| `mcp_access` | `read_only` | `read_only`, `ask`, or `full`. |
+| `mcp_access` | `read_only` | `read_only` or `full` (or legacy `ask`). |
 | `mcp_read` | `safe` | `safe` or `sensitive` (response masking). |
-| `mcp_destructive` | false | When true and `mcp_access` is `full`, destructive tools skip the approval gate. |
+| `mcp_destructive` | false | Reserved for hosts; does **not** skip destructive approval in `decide_write`. Every destructive operation still goes through the approval hooks. |
+
+Numeric claims (for example `company_id`) use normal JSON numbers. `0` is a real value: treat a present `0` and a missing claim as different; do not collapse them in verification logic.
 
 ## Access modes and approvals
 
@@ -187,8 +190,8 @@ Write gate logic lives in `decide_write`:
 | `mcp_access` | Safe methods (GET, HEAD, OPTIONS) | Other methods |
 |--------------|-------------------------------------|---------------|
 | `read_only` | Allowed | Blocked unless `x-mcp.read_only` on the tool |
-| `ask` | Allowed | Needs approval unless tool is read-only |
-| `full` | Allowed | Allowed; destructive ops need approval unless `mcp_destructive` is true |
+| `ask` | Allowed | Same as `full` for this library (needs approval for writes unless the tool is read-only); prefer `full` for new agents |
+| `full` | Allowed | Non-destructive writes allowed; destructive tools always need approval (fresh single-use human approval, `mcp_destructive` does not bypass) |
 
 When approval is needed, `McpServer` builds an `approval_payload` (agent, company, service, tool name, arguments, hash, path, method) and:
 
@@ -200,6 +203,8 @@ When approval is needed, `McpServer` builds an `approval_payload` (agent, compan
 
 Wire these callbacks to your Identity approval-state and consume HTTP endpoints. Use `build_mcp_approval_assertion` when the service calls Identity to create an approval (audience `shellui-mcp-approval`, scope `mcp.approval.create`).
 
+**Regional / delegated authority (optional, last parameters in Python):** `grant_version` (`int | None`), `global_company_id` (`str | None`), `company_binding_version` (`int | None`). Detect presence with `is not None` only. Do not use truthiness on `company_binding_version` or `grant_version` (`0` is valid). **Personal (legacy):** omit both `global_company_id` and `company_binding_version`; that means a tenant-scoped row without global delegation rollover. You may pass `grant_version` as a non-negative int (including `0`) or omit it when the JWT should have no `grant_version` claim (no default `0`). **Delegated:** pass `global_company_id`, `company_binding_version` (explicit `0` allowed), and `grant_version` (all required). Strict Identity services should pass the full delegated triple for global agents. The library keeps `None` optional on the signature so 0.4.0 call sites still import. `bool` is rejected for numeric fields. There is no `**extra_claims` escape hatch. Reserved claim names cannot be overridden by an arbitrary dict.
+
 Other internal assertion helpers (RS256 via `JWT_SIGNING_KEY` or explicit `private_key_pem` / `kid` / `issuer` kwargs):
 
 | Helper | Audience | Scope |
@@ -208,6 +213,8 @@ Other internal assertion helpers (RS256 via `JWT_SIGNING_KEY` or explicit `priva
 | `build_mcp_revocation_assertion` | `shellui-mcp-revocation` | `mcp.revocation.read` |
 
 Verify incoming assertions with `verify_mcp_internal_assertion` (alias of `verify_rs256_mcp_assertion`). Pass the caller JWKS document or public PEM, the expected caller issuer (must match `iss`), audience, scope, and Identity public URL as `expected_target`. RS256 only; optional `register_jti` for replay protection.
+
+Service-to-Identity assertions are still signed with the **caller's** RS256 material (`JWT_SIGNING_KEY` or explicit PEM/`kid`); Identity verifies with the caller's JWKS. Use the same pattern for regional authority fields: sign only through `build_mcp_*` helpers so proofs stay aligned with verification.
 
 ### Downstream MCP token delegation (`shellui_django.mcp.delegation`)
 
@@ -229,7 +236,7 @@ Raises `DownstreamTokenRequestError` on failure (check `.status`, default 401).
 
 This library does not verify agent bearer tokens inside `McpServer`. In your `/mcp` view:
 
-1. Require RS256. Use `decode_identity_rs256_jwt` with Identity issuer and JWKS (`{issuer}/.well-known/jwks.json`, or pass `jwks_url` / inline `jwks`).
+1. Require RS256. Use `decode_identity_rs256_jwt` with Identity issuer and JWKS (`{issuer}/.well-known/jwks.json`, or pass `jwks_url` / inline `jwks`). The decoder always requires `exp`, `iat`, `sub`, `scope`, and `jti`. Pass extra claim names only in `require_claims`; they are unioned with that core set. Decoded `iat` and `exp` are normalized to non-negative integers (strict types after verify; digit strings from legacy issuers are accepted).
 2. Check audience per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html): the JWT `aud` must match this service's MCP resource URL (`https://your-origin/mcp`). Use `mcp_resource_from_origin` to build the expected value and `access_token_audience_matches` to compare.
 3. Parse required claims (`agent_id`, `scope`, etc.) and reject missing or invalid tokens before calling `handle`.
 
@@ -245,10 +252,24 @@ Resource URLs must be absolute `https` (or `http` on loopback only), path exactl
 
 Services poll Identity for revoked agents. Identity should sign responses with `build_mcp_revocation_list_response_assertion` (RS256 via `JWT_SIGNING_KEY`).
 
+Optional **last** kwargs `revocation_policy_version` and `max_active_grant_version` (non-negative `int` or `None` to omit) are copied into the signed JWT. **New fields** use JSON integers in the JWT and body (exact type parity). **Legacy HTTP boundary only:** top-level envelope keys may still use a decimal digit string (for example `"0"`) for older services; signed JWT values may use the same legacy string form for those policy integers. Reject bool, float, and non-digit strings. If a key is absent from the JWT, the body must not add it. If the JWT includes a key, the body must echo it. Unsigned numbers never fill a missing signed claim. `verify_mcp_revocation_list_response` returns both policy keys: `int` when signed, else `None`. `parse_trusted_revocation_poll_response` still returns `(revoked_ids, cache_seconds, agent_rows)`; rows may include helper fields added after verification. Assertions require `jti`, `iat` and `exp` as non-negative Unix seconds (ints after decode;
+legacy digit strings are coerced after verify), `exp` strictly after `iat`,
+`cache_seconds` positive and at most `REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS`,
+and `exp - iat` at most that same cap. There is no separate maximum age on `iat` beyond
+that span and the leeway described below (lists may stay cache-stable for the poll window).
+
+After decode, times must fall within the same clock window PyJWT uses
+(`IDENTITY_RS256_LEEWAY_SECONDS`, 5 seconds): not issued in the future beyond leeway,
+not expired beyond leeway. Decode uses that leeway so verification stays consistent.
+
+**Per-agent snapshots (`agents[]`):** delegated rows need `global_company_id`, `company_binding_version`, and `grant_version`. Personal rows omit the global pair (or use JSON `null`). **Pair rule:** both global fields absent, or both set. `0` is valid for `company_binding_version`. Use `is not None`, not truthiness. Optional personal `grant_version` is not compared to `max_active_grant_version`. For delegated rows, if `grant_version` is greater than the signed `max_active_grant_version`, the row is **not** trusted for binding: `mcp_authority_snapshot_rejected` is true, fingerprint is `null`. The cap is a signed policy snapshot, not permission to widen grants. Match `agent_id` with verified tenant and binding before you trust a row. After checks, delegated rows that pass add `mcp_authority_snapshot_fingerprint` (SHA-256 hex of sorted `company_binding_version`, `global_company_id`, `grant_version` JSON). Personal rows use `null` fingerprint. Compare the raw signed `agents` list to the HTTP body before you rely on helper fields.
+
+Company-bound rows are signed: compare the JWT `agents` claim to the JSON body, then read normalized rows from `verify_mcp_revocation_list_response`.
+
 Consumers should use `parse_trusted_revocation_poll_response` or `verify_mcp_revocation_list_response`:
 
 - Verifies the embedded assertion with Identity JWKS (audience `shellui-mcp-revocation`, scope `mcp.revocation.list`, subject `identity`).
-- Cross-checks `revoked_agent_ids`, `cache_seconds`, and `agents` between the JSON body and the JWT.
+- Cross-checks `revoked_agent_ids`, `cache_seconds`, and `agents` between the JSON body and the JWT, and optional version fields when Identity includes them in the assertion.
 - On any error, treat data as untrusted (**fail closed**).
 
 Pass a callable `identity_revocation_check(agent_id, company_id)` into `McpServer`. Return `True` when the agent is revoked. `handle` responds with `403` and `agent_revoked`.
@@ -280,7 +301,7 @@ When `AUTH_RATE_LIMIT_ENABLED` is true, each `agent_id` is limited using Django'
 - [ ] Only intentional endpoints tagged `mcp-tools`.
 - [ ] `x-mcp-secret` / `x-mcp-sensitive` set on PII and credential fields.
 - [ ] Read-only POST tools listed in `validate_read_only_post_tools` allowlist.
-- [ ] Approval hooks implemented for `ask` mode and destructive `full` mode.
+- [ ] Approval hooks implemented for non-destructive `full` writes and for **every** destructive tool call in `full` mode.
 - [ ] `HTTP_AUTHORIZATION` on MCP requests matches what inner views expect.
 - [ ] Production cache configured for MCP rate limits when enabled.
 

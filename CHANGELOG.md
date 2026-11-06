@@ -23,6 +23,20 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.4.1] - 2026-11-06
+
+### 🛠 Improvements
+
+- MCP internal assertions: optional regional authority fields on `build_mcp_approval_assertion` (`grant_version`, `global_company_id`, `company_binding_version`) and optional revocation policy metadata on `build_mcp_revocation_list_response_assertion` (`revocation_policy_version`, `max_active_grant_version`); strict non-negative integers, delegated global pair rules (`is not None` only), body and JWT parity for top-level policy fields (legacy digit strings on the HTTP envelope), per-agent binding validation with `mcp_authority_snapshot_fingerprint` and `mcp_authority_snapshot_rejected` on trusted rows, delegated grant cap checks against signed `max_active_grant_version` without blocking personal rows, `jti` and lifetime invariants (`exp` after `iat`, 600 s cap) on Identity-signed revocation lists, and positive `cache_seconds` bounded by the same cap.
+- Revocation list verification: strict `iat` / `exp` types after decode (reject bool and float; digit strings coerced), clock window aligned with `IDENTITY_RS256_LEEWAY_SECONDS` (5 s) on `decode_identity_rs256_jwt`.
+- `decode_identity_rs256_jwt` always requires `exp`, `iat`, `sub`, `scope`, and `jti`; `require_claims` adds further required names (union). Timestamps are normalized to integers after verify.
+- `verify_rs256_mcp_assertion` lifetime checks use the same strict timestamp parsing as revocation (no `int()` on raw claims).
+- Destructive MCP tools always require approval in `full` mode; `mcp_destructive` does not skip the gate.
+
+### 📚 Documentation
+
+- `docs/mcp.md`: regional authority, revocation policy proof, per-agent binding snapshots, numeric `0` vs omitted or `None`, `decode_identity_rs256_jwt` requirements, and destructive approval rules.
+
 ## [0.4.0] - 2026-11-04
 
 ### 🔒 Security

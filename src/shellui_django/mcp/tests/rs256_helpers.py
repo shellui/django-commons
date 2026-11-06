@@ -56,6 +56,8 @@ def sign_test_revocation_list_assertion(
     revoked_agent_ids: list[str],
     agents: list[dict] | None = None,
     cache_seconds: int = 30,
+    revocation_policy_version: int | None = None,
+    max_active_grant_version: int | None = None,
 ) -> str:
     now = int(time.time())
     claims = {
@@ -70,5 +72,15 @@ def sign_test_revocation_list_assertion(
         'exp': now + cache_seconds,
         'jti': uuid.uuid4().hex,
     }
+    if revocation_policy_version is not None:
+        claims['revocation_policy_version'] = revocation_policy_version
+    if max_active_grant_version is not None:
+        claims['max_active_grant_version'] = max_active_grant_version
+    token = jwt.encode(claims, private_pem, algorithm='RS256', headers={'kid': kid})
+    return token.decode('utf-8') if isinstance(token, bytes) else token
+
+
+def encode_test_rs256_jwt(claims: dict, *, private_pem: str, kid: str) -> str:
+    """Encode arbitrary claims for negative tests (do not use in production)."""
     token = jwt.encode(claims, private_pem, algorithm='RS256', headers={'kid': kid})
     return token.decode('utf-8') if isinstance(token, bytes) else token
