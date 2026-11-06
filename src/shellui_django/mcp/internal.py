@@ -15,7 +15,7 @@ from rest_framework_simplejwt.settings import api_settings
 
 INTERNAL_ASSERTION_MAX_LIFETIME_SECONDS = 60
 INTERNAL_ASSERTION_LEEWAY_SECONDS = 5
-REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS = 600900
+REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS = 600
 
 
 def _identity_issuer() -> str:
@@ -81,7 +81,21 @@ def _delegated_binding_version_kwarg(value: Any, *, field: str) -> int:
 
 
 def _non_negative_int_from_json_body(value: Any, *, field: str) -> int:
-    """Parse JSON envelope numbers (or decimal digit strings) for version parity checks."""
+    """Legacy HTTP envelope: int or decimal digit string only (no bool/float)."""
+    if isinstance(value, bool):
+        raise InternalAssertionError(f'{field} must be a non-negative integer.')
+    if isinstance(value, int):
+        return _strict_non_negative_int(value, field=field)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s.isdigit():
+            raise InternalAssertionError(f'{field} must be a non-negative integer.')
+        return int(s)
+    raise InternalAssertionError(f'{field} must be a non-negative integer.')
+
+
+def _jwt_optional_int_claim(value: Any, *, field: str) -> int:
+    """JWT claim value: int or legacy decimal string (Identity compatibility). Rejects bool/float."""
     if isinstance(value, bool):
         raise InternalAssertionError(f'{field} must be a non-negative integer.')
     if isinstance(value, int):
@@ -221,6 +235,7 @@ def build_mcp_revocation_list_response_assertion(
         raise InternalAssertionError('lifetime_seconds must be positive.')
     if lifetime_seconds > REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS:
         raise InternalAssertionError('Revocation list assertion lifetime exceeds the maximum allowed.')
+    cache_val = _cache_seconds_claim(cache_seconds, field='cache_seconds')
     policy_ver = _revocation_version_kwarg(revocation_policy_version, field='revocation_policy_version')
     max_grant_ver = _revocation_version_kwarg(max_active_grant_version, field='max_active_grant_version')
     claims: dict[str, Any] = {
@@ -230,7 +245,7 @@ def build_mcp_revocation_list_response_assertion(
         'scope': REVOCATION_LIST_SCOPE,
         'revoked_agent_ids': [str(item) for item in revoked_agent_ids],
         'agents': agent_rows,
-        'cache_seconds': int(cache_seconds),
+        'cache_seconds': cache_val,
         'iat': now,
         'exp': now + int(lifetime_seconds),
         'jti': uuid.uuid4().hex,
@@ -326,8 +341,8 @@ def _assert_identity_revocation_token_invariants(claims: dict[str, Any]) -> None
         raise InternalAssertionError('Invalid iat or exp.') from exc
     if iat < 0 or exp < 0:
         raise InternalAssertionError('Invalid iat or exp.')
-    if exp < iat:
-        raise InternalAssertionError('Revocation list assertion lifetime is invalid.')
+    if exp <= iat:
+        raise InternalAssertionError('Revocation list assertion exp must be after iat.')
     if exp - iat > REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS:
         raise InternalAssertionError('Revocation list assertion lifetime exceeds the maximum allowed.')
     jti = str(claims.get('jti') or '').strip()
@@ -336,12 +351,21 @@ def _assert_identity_revocation_token_invariants(claims: dict[str, Any]) -> None
 
 
 def _signed_int_body_matches_claim(*, claim_value: Any, body_value: Any, field: str) -> int:
-    """Compare JSON-native non-negative int in JWT to body (int or decimal digit string)."""
-    claim_int = _strict_non_negative_int(claim_value, field=field)
+    """Compare JWT claim (int or legacy digit string) to HTTP body (int or legacy digit string)."""
+    claim_int = _jwt_optional_int_claim(claim_value, field=field)
     body_int = _non_negative_int_from_json_body(body_value, field=field)
     if body_int != claim_int:
         raise InternalAssertionError('Revocation list body mismatch.')
     return claim_int
+
+
+def _cache_seconds_claim(value: Any, *, field: str) -> int:
+    v = _jwt_optional_int_claim(value, field=field)
+    if v <= 0:
+        raise InternalAssertionError(f'{field} must be positive.')
+    if v > REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS:
+        raise InternalAssertionError(f'{field} exceeds the maximum allowed.')
+    return v
 
 
 def _agent_global_pair_present(row: dict[str, Any]) -> tuple[bool, bool]:
@@ -351,6 +375,11 @@ def _agent_global_pair_present(row: dict[str, Any]) -> tuple[bool, bool]:
     g_pres = g is not None
     b_pres = b is not None
     return g_pres, b_pres
+
+
+def _agent_row_version_int(value: Any, *, field: str) -> int:
+    """Signed ``agents[]`` row: non-negative int, or legacy decimal string (no bool/float)."""
+    return _jwt_optional_int_claim(value, field=field)
 
 
 def _validate_trusted_agent_authority_snapshots(
@@ -363,13 +392,15 @@ def _validate_trusted_agent_authority_snapshots(
 
     Personal agents: ``global_company_id`` and ``company_binding_version`` must both be absent
     or JSON ``null`` (never one side set). Optional ``grant_version`` may be a non-negative int
-    (including ``0``) or omitted / ``null``.
+    (including ``0``) or omitted / ``null``. Personal ``grant_version`` is not capped by
+    ``max_active_grant_version`` (that cap applies to delegated snapshots only).
 
     Delegated agents: ``global_company_id``, ``company_binding_version``, and ``grant_version``
     are all required non-negative ints / UUID string; ``company_binding_version`` may be ``0``.
 
-    When ``max_active_grant_version`` is signed (non-``None``), each row that carries ``grant_version``
-    must satisfy ``grant_version <= max_active_grant_version``.
+    When ``max_active_grant_version`` is signed (non-``None``), delegated rows with
+    ``grant_version`` greater than the cap are marked ``mcp_authority_snapshot_rejected`` (fail
+    closed for that row only). The cap is a signed policy snapshot, not a grant to widen authority.
     """
     if not isinstance(agents, list):
         raise InternalAssertionError('Revocation list agents must be a list.')
@@ -386,23 +417,26 @@ def _validate_trusted_agent_authority_snapshots(
         if g_pres:
             g = _normalize_uuid_string(row.get('global_company_id'), field='global_company_id')
             row['global_company_id'] = g
-            row['company_binding_version'] = _strict_non_negative_int(
+            row['company_binding_version'] = _agent_row_version_int(
                 row.get('company_binding_version'),
                 field='company_binding_version',
             )
             if 'grant_version' not in row or row.get('grant_version') is None:
                 raise InternalAssertionError('grant_version is required when global_company_id is set.')
-            row['grant_version'] = _strict_non_negative_int(row.get('grant_version'), field='grant_version')
+            row['grant_version'] = _agent_row_version_int(row.get('grant_version'), field='grant_version')
             if max_active_grant_version is not None and row['grant_version'] > max_active_grant_version:
-                raise InternalAssertionError('Revocation list agent grant_version exceeds signed cap.')
-            payload = {
-                'company_binding_version': row['company_binding_version'],
-                'global_company_id': g,
-                'grant_version': row['grant_version'],
-            }
-            row['mcp_authority_snapshot_fingerprint'] = hashlib.sha256(
-                json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
-            ).hexdigest()
+                row['mcp_authority_snapshot_rejected'] = True
+                row['mcp_authority_snapshot_fingerprint'] = None
+            else:
+                row['mcp_authority_snapshot_rejected'] = False
+                payload = {
+                    'company_binding_version': row['company_binding_version'],
+                    'global_company_id': g,
+                    'grant_version': row['grant_version'],
+                }
+                row['mcp_authority_snapshot_fingerprint'] = hashlib.sha256(
+                    json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+                ).hexdigest()
         else:
             row.pop('global_company_id', None)
             row.pop('company_binding_version', None)
@@ -410,10 +444,9 @@ def _validate_trusted_agent_authority_snapshots(
             if gv is None:
                 row.pop('grant_version', None)
             else:
-                row['grant_version'] = _strict_non_negative_int(gv, field='grant_version')
-                if max_active_grant_version is not None and row['grant_version'] > max_active_grant_version:
-                    raise InternalAssertionError('Revocation list agent grant_version exceeds signed cap.')
+                row['grant_version'] = _agent_row_version_int(gv, field='grant_version')
             row['mcp_authority_snapshot_fingerprint'] = None
+            row['mcp_authority_snapshot_rejected'] = False
         out.append(row)
     return out
 
@@ -552,15 +585,17 @@ def verify_mcp_revocation_list_response(
     if str(claims.get('sub') or '') != 'identity':
         raise InternalAssertionError('Revocation list issuer subject mismatch.')
     claimed_ids = [str(item) for item in (claims.get('revoked_agent_ids') or [])]
-    claimed_cache = int(claims.get('cache_seconds') or 0)
+    claimed_cache = _cache_seconds_claim(claims.get('cache_seconds'), field='cache_seconds')
     body_ids = payload.get('revoked_agent_ids')
     if body_ids is not None:
         normalized_body = [str(item) for item in body_ids]
         if normalized_body != claimed_ids:
             raise InternalAssertionError('Revocation list body mismatch.')
     body_cache = payload.get('cache_seconds')
-    if body_cache is not None and int(body_cache) != claimed_cache:
-        raise InternalAssertionError('Revocation list cache mismatch.')
+    if body_cache is not None:
+        body_cache_int = _non_negative_int_from_json_body(body_cache, field='cache_seconds')
+        if body_cache_int != claimed_cache:
+            raise InternalAssertionError('Revocation list cache mismatch.')
     max_grant_cap: int | None
     if 'max_active_grant_version' in claims:
         if 'max_active_grant_version' not in payload:

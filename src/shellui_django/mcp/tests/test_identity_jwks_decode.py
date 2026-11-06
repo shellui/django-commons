@@ -59,3 +59,17 @@ class IdentityJwksDecodeTests(unittest.TestCase):
             require_claims=('exp', 'iat', 'sub', 'scope', 'jti'),
         )
         self.assertIn('jti', out)
+
+    def test_empty_require_claims_still_requires_core(self):
+        claims = self._claims(with_jti=True)
+        del claims['iat']
+        token = jwt.encode(claims, self.private_pem, algorithm='RS256', headers={'kid': self.kid})
+        token = token.decode('utf-8') if isinstance(token, bytes) else token
+        with self.assertRaises(IdentityJwksError):
+            decode_identity_rs256_jwt(
+                token,
+                audience=TEST_AUD,
+                issuer=TEST_ISSUER,
+                jwks=self.jwks,
+                require_claims=(),
+            )

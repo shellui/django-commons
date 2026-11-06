@@ -109,6 +109,8 @@ def decode_identity_rs256_jwt(
         raise IdentityJwksError('Identity JWT must use RS256.')
     document = get_jwks_document(jwks_url=jwks_url, jwks=jwks, timeout=timeout)
     key = resolve_verification_key(token, document)
+    mandatory = {'exp', 'iat', 'sub', 'scope'}
+    merged = sorted(mandatory.union(require_claims))
     try:
         return jwt.decode(
             token,
@@ -116,7 +118,7 @@ def decode_identity_rs256_jwt(
             algorithms=['RS256'],
             audience=audience,
             issuer=issuer,
-            options={'require': list(require_claims)},
+            options={'require': merged},
         )
     except jwt.PyJWTError as exc:
         raise IdentityJwksError('Invalid Identity JWT.') from exc

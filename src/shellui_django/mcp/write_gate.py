@@ -28,6 +28,7 @@ def decide_write(
     allow_destructive_without_asking: bool,
     tool_read_only: bool = False,
 ) -> WriteGateDecision:
+    _ = allow_destructive_without_asking  # reserved; destructive ops always need approval (see docs)
     if tool_read_only:
         return WriteGateDecision(allowed=True)
     m = (method or 'GET').upper()
@@ -36,7 +37,8 @@ def decide_write(
     if access_mode == ACCESS_READ_ONLY:
         return WriteGateDecision(allowed=False, reason='Agent is read only.')
     if access_mode == ACCESS_FULL:
-        if destructive and not allow_destructive_without_asking:
+        if destructive:
+            # Every destructive call needs a fresh single-use human approval (`mcp_destructive` does not skip).
             return WriteGateDecision(allowed=False, needs_approval=True, reason='Destructive change requires approval.')
         return WriteGateDecision(allowed=True)
     if access_mode == ACCESS_ASK:
