@@ -27,13 +27,16 @@ See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog
 
 ### 🛠 Improvements
 
-- MCP internal assertions: optional regional authority fields on `build_mcp_approval_assertion` (`grant_version`, `global_company_id`, `company_binding_version`) and optional revocation policy metadata on `build_mcp_revocation_list_response_assertion` (`revocation_policy_version`, `max_active_grant_version`); strict non-negative integers, delegated global pair rules, body–JWT parity for revocation responses (including normalized `"0"` body strings), and `jti`/lifetime invariants on Identity-signed revocation lists.
-- Aggregating MCP gateway skips outbound requests when a downstream URL is not a canonical `/mcp` HTTPS (or loopback HTTP) resource URL.
+- MCP internal assertions: optional regional authority fields on `build_mcp_approval_assertion` (`grant_version`, `global_company_id`, `company_binding_version`) and optional revocation policy metadata on `build_mcp_revocation_list_response_assertion` (`revocation_policy_version`, `max_active_grant_version`); strict non-negative integers, delegated global pair rules (`is not None` only), body–JWT parity for revocation responses (including normalized `"0"` body strings), per-agent binding snapshot validation with `mcp_authority_snapshot_fingerprint` on trusted rows, grant cap vs signed `max_active_grant_version`, and `jti`/lifetime invariants on Identity-signed revocation lists.
 - `decode_identity_rs256_jwt` accepts optional `require_claims` (default unchanged).
 
 ### 📚 Documentation
 
-- `docs/mcp.md`: regional authority, revocation versioning, gateway URL validation, numeric `0` semantics, and `require_claims` for Identity JWTs.
+- `docs/mcp.md`: regional authority, revocation policy proof, per-agent binding snapshots, numeric `0` vs omitted/`None`, and `require_claims` for Identity JWTs.
+
+### ⚠️ Note
+
+- Identity PR **#135** was not accessible from the agent environment; contract alignment follows the shared specification in reviewer notes.
 
 ## [0.4.0] - 2026-11-04
 

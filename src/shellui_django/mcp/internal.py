@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
 from collections.abc import Callable
@@ -342,6 +344,80 @@ def _signed_int_body_matches_claim(*, claim_value: Any, body_value: Any, field: 
     return claim_int
 
 
+def _agent_global_pair_present(row: dict[str, Any]) -> tuple[bool, bool]:
+    """True when global_company_id / company_binding_version are present (not None); never uses truthiness on ints."""
+    g = row.get('global_company_id', None)
+    b = row.get('company_binding_version', None)
+    g_pres = g is not None
+    b_pres = b is not None
+    return g_pres, b_pres
+
+
+def _validate_trusted_agent_authority_snapshots(
+    agents: list[Any],
+    *,
+    max_active_grant_version: int | None,
+) -> list[dict[str, Any]]:
+    """
+    Validate per-agent global binding snapshots for Identity-signed revocation rows.
+
+    Personal agents: ``global_company_id`` and ``company_binding_version`` must both be absent
+    or JSON ``null`` (never one side set). Optional ``grant_version`` may be a non-negative int
+    (including ``0``) or omitted / ``null``.
+
+    Delegated agents: ``global_company_id``, ``company_binding_version``, and ``grant_version``
+    are all required non-negative ints / UUID string; ``company_binding_version`` may be ``0``.
+
+    When ``max_active_grant_version`` is signed (non-``None``), each row that carries ``grant_version``
+    must satisfy ``grant_version <= max_active_grant_version``.
+    """
+    if not isinstance(agents, list):
+        raise InternalAssertionError('Revocation list agents must be a list.')
+    out: list[dict[str, Any]] = []
+    for raw in agents:
+        if not isinstance(raw, dict):
+            raise InternalAssertionError('Revocation list agents must be objects.')
+        row = dict(raw)
+        g_pres, b_pres = _agent_global_pair_present(row)
+        if g_pres != b_pres:
+            raise InternalAssertionError(
+                'Revocation list agent global_company_id and company_binding_version must both be set or both null.'
+            )
+        if g_pres:
+            g = _normalize_uuid_string(row.get('global_company_id'), field='global_company_id')
+            row['global_company_id'] = g
+            row['company_binding_version'] = _strict_non_negative_int(
+                row.get('company_binding_version'),
+                field='company_binding_version',
+            )
+            if 'grant_version' not in row or row.get('grant_version') is None:
+                raise InternalAssertionError('grant_version is required when global_company_id is set.')
+            row['grant_version'] = _strict_non_negative_int(row.get('grant_version'), field='grant_version')
+            if max_active_grant_version is not None and row['grant_version'] > max_active_grant_version:
+                raise InternalAssertionError('Revocation list agent grant_version exceeds signed cap.')
+            payload = {
+                'company_binding_version': row['company_binding_version'],
+                'global_company_id': g,
+                'grant_version': row['grant_version'],
+            }
+            row['mcp_authority_snapshot_fingerprint'] = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
+            ).hexdigest()
+        else:
+            row.pop('global_company_id', None)
+            row.pop('company_binding_version', None)
+            gv = row.get('grant_version', None)
+            if gv is None:
+                row.pop('grant_version', None)
+            else:
+                row['grant_version'] = _strict_non_negative_int(gv, field='grant_version')
+                if max_active_grant_version is not None and row['grant_version'] > max_active_grant_version:
+                    raise InternalAssertionError('Revocation list agent grant_version exceeds signed cap.')
+            row['mcp_authority_snapshot_fingerprint'] = None
+        out.append(row)
+    return out
+
+
 def verify_rs256_mcp_assertion(
     raw_token: str,
     public_jwks_or_pem: dict[str, Any] | str,
@@ -485,13 +561,30 @@ def verify_mcp_revocation_list_response(
     body_cache = payload.get('cache_seconds')
     if body_cache is not None and int(body_cache) != claimed_cache:
         raise InternalAssertionError('Revocation list cache mismatch.')
-    claimed_agents = claims.get('agents') or []
+    max_grant_cap: int | None
+    if 'max_active_grant_version' in claims:
+        if 'max_active_grant_version' not in payload:
+            raise InternalAssertionError('Revocation list body mismatch.')
+        max_grant_cap = _signed_int_body_matches_claim(
+            claim_value=claims['max_active_grant_version'],
+            body_value=payload['max_active_grant_version'],
+            field='max_active_grant_version',
+        )
+    else:
+        if 'max_active_grant_version' in payload:
+            raise InternalAssertionError('Revocation list body mismatch.')
+        max_grant_cap = None
+    claimed_agents_raw = claims.get('agents') or []
     body_agents = payload.get('agents')
-    if body_agents is not None and body_agents != claimed_agents:
+    if body_agents is not None and body_agents != claimed_agents_raw:
         raise InternalAssertionError('Revocation list agents mismatch.')
+    validated_agents = _validate_trusted_agent_authority_snapshots(
+        claimed_agents_raw,
+        max_active_grant_version=max_grant_cap,
+    )
     out: dict[str, Any] = {
         'revoked_agent_ids': claimed_ids,
-        'agents': claimed_agents,
+        'agents': validated_agents,
         'cache_seconds': claimed_cache,
     }
     if 'revocation_policy_version' in claims:
@@ -507,19 +600,7 @@ def verify_mcp_revocation_list_response(
         if 'revocation_policy_version' in payload:
             raise InternalAssertionError('Revocation list body mismatch.')
         out['revocation_policy_version'] = None
-    if 'max_active_grant_version' in claims:
-        if 'max_active_grant_version' not in payload:
-            raise InternalAssertionError('Revocation list body mismatch.')
-        max_grant_int = _signed_int_body_matches_claim(
-            claim_value=claims['max_active_grant_version'],
-            body_value=payload['max_active_grant_version'],
-            field='max_active_grant_version',
-        )
-        out['max_active_grant_version'] = max_grant_int
-    else:
-        if 'max_active_grant_version' in payload:
-            raise InternalAssertionError('Revocation list body mismatch.')
-        out['max_active_grant_version'] = None
+    out['max_active_grant_version'] = max_grant_cap
     return out
 
 

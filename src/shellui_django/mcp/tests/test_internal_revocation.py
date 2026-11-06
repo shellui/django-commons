@@ -1,3 +1,5 @@
+import hashlib
+import json
 import time
 import unittest
 import uuid
@@ -17,6 +19,16 @@ from shellui_django.mcp.internal import (
 from shellui_django.mcp.tests.rs256_helpers import generate_test_rsa_jwks, sign_test_revocation_list_assertion
 
 TEST_ISSUER = 'https://identity.example.com'
+GLOBAL_CO = '550e8400-e29b-41d4-a716-446655440000'
+
+
+def _auth_fingerprint(*, global_company_id: str, company_binding_version: int, grant_version: int) -> str:
+    payload = {
+        'company_binding_version': company_binding_version,
+        'global_company_id': global_company_id,
+        'grant_version': grant_version,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 class RevocationListJwksVerificationTests(unittest.TestCase):
@@ -52,6 +64,9 @@ class RevocationListJwksVerificationTests(unittest.TestCase):
         self.assertEqual(trusted['revoked_agent_ids'], ['a', 'b'])
         self.assertIsNone(trusted.get('revocation_policy_version'))
         self.assertIsNone(trusted.get('max_active_grant_version'))
+        for row in trusted['agents']:
+            self.assertIn('mcp_authority_snapshot_fingerprint', row)
+            self.assertIsNone(row['mcp_authority_snapshot_fingerprint'])
         ids, cache, rows = parse_trusted_revocation_poll_response(
             payload,
             expected_issuer=TEST_ISSUER,
@@ -59,7 +74,10 @@ class RevocationListJwksVerificationTests(unittest.TestCase):
         )
         self.assertEqual(ids, frozenset({'a', 'b'}))
         self.assertEqual(cache, REVOCATION_CACHE_SECONDS)
-        self.assertEqual(rows, agents)
+        self.assertEqual(len(rows), len(agents))
+        self.assertEqual({r['agent_id'] for r in rows}, {'a'})
+        for r in rows:
+            self.assertIsNone(r['mcp_authority_snapshot_fingerprint'])
 
     def test_missing_assertion_fails_closed(self):
         with self.assertRaises(InternalAssertionError):
@@ -169,7 +187,10 @@ class RevocationListJwksVerificationTests(unittest.TestCase):
         )
         self.assertEqual(ids, frozenset({'a'}))
         self.assertEqual(cache, REVOCATION_CACHE_SECONDS)
-        self.assertEqual(rows, agents)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['agent_id'], 'a')
+        self.assertEqual(rows[0]['company_id'], 1)
+        self.assertIsNone(rows[0]['mcp_authority_snapshot_fingerprint'])
 
     def test_body_version_mismatch_fails_closed(self):
         agents = []
@@ -277,3 +298,120 @@ class RevocationListJwksVerificationTests(unittest.TestCase):
                 revoked_agent_ids=[],
                 lifetime_seconds=REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS + 1,
             )
+
+    def test_delegated_agent_row_fingerprint_and_cap(self):
+        row = {
+            'agent_id': 'd1',
+            'company_id': 9,
+            'global_company_id': GLOBAL_CO.upper().replace('-', ''),
+            'company_binding_version': 0,
+            'grant_version': 2,
+        }
+        assertion = sign_test_revocation_list_assertion(
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+            revoked_agent_ids=[],
+            agents=[row],
+            max_active_grant_version=2,
+        )
+        payload = {
+            'revoked_agent_ids': [],
+            'agents': [row],
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'max_active_grant_version': 2,
+            'revocation_assertion': assertion,
+        }
+        trusted = verify_mcp_revocation_list_response(
+            payload,
+            expected_issuer=TEST_ISSUER,
+            jwks=self.jwks,
+        )
+        out_row = trusted['agents'][0]
+        self.assertEqual(out_row['global_company_id'], GLOBAL_CO)
+        self.assertEqual(out_row['company_binding_version'], 0)
+        self.assertEqual(out_row['grant_version'], 2)
+        self.assertEqual(
+            out_row['mcp_authority_snapshot_fingerprint'],
+            _auth_fingerprint(
+                global_company_id=GLOBAL_CO,
+                company_binding_version=0,
+                grant_version=2,
+            ),
+        )
+
+    def test_incomplete_delegated_pair_in_row_rejected(self):
+        row = {'agent_id': 'x', 'global_company_id': GLOBAL_CO}
+        assertion = sign_test_revocation_list_assertion(
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+            revoked_agent_ids=[],
+            agents=[row],
+        )
+        payload = {
+            'revoked_agent_ids': [],
+            'agents': [row],
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'revocation_assertion': assertion,
+        }
+        with self.assertRaises(InternalAssertionError):
+            verify_mcp_revocation_list_response(
+                payload,
+                expected_issuer=TEST_ISSUER,
+                jwks=self.jwks,
+            )
+
+    def test_grant_exceeds_signed_cap(self):
+        row = {
+            'agent_id': 'd1',
+            'global_company_id': GLOBAL_CO,
+            'company_binding_version': 1,
+            'grant_version': 3,
+        }
+        assertion = sign_test_revocation_list_assertion(
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+            revoked_agent_ids=[],
+            agents=[row],
+            max_active_grant_version=2,
+        )
+        payload = {
+            'revoked_agent_ids': [],
+            'agents': [row],
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'max_active_grant_version': 2,
+            'revocation_assertion': assertion,
+        }
+        with self.assertRaises(InternalAssertionError):
+            verify_mcp_revocation_list_response(
+                payload,
+                expected_issuer=TEST_ISSUER,
+                jwks=self.jwks,
+            )
+
+    def test_personal_grant_version_zero_allowed(self):
+        row = {'agent_id': 'p1', 'company_id': 1, 'grant_version': 0}
+        assertion = sign_test_revocation_list_assertion(
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+            revoked_agent_ids=[],
+            agents=[row],
+            max_active_grant_version=0,
+        )
+        payload = {
+            'revoked_agent_ids': [],
+            'agents': [row],
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'max_active_grant_version': 0,
+            'revocation_assertion': assertion,
+        }
+        trusted = verify_mcp_revocation_list_response(
+            payload,
+            expected_issuer=TEST_ISSUER,
+            jwks=self.jwks,
+        )
+        self.assertEqual(trusted['agents'][0]['grant_version'], 0)
+        self.assertIsNone(trusted['agents'][0]['mcp_authority_snapshot_fingerprint'])

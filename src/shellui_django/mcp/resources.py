@@ -8,17 +8,6 @@ from urllib.parse import urlsplit
 MCP_RESOURCE_SUFFIX = '/mcp'
 
 
-def is_valid_mcp_service_url(url: str) -> bool:
-    """
-    True when ``url`` is a canonical Shellui MCP HTTPS endpoint (or HTTP loopback).
-
-    Used by the aggregating gateway to reject misconfigured foreign-cloud URLs before
-    outbound requests (SSRF-style hardening). Same rules as ``normalize_resource_indicator``
-    for the path, scheme, and host.
-    """
-    return normalize_resource_indicator(str(url or '').strip()) is not None
-
-
 def mcp_resource_from_origin(origin: str) -> str:
     """Build the protected resource identifier for a Shellui service origin."""
     base = str(origin or '').strip().rstrip('/')
