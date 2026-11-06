@@ -23,16 +23,17 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
-## [Unreleased]
+## [0.4.1] - 2026-11-06
 
 ### 🛠 Improvements
 
-- MCP internal assertions: optional regional authority fields on `build_mcp_approval_assertion` (`grant_version`, `global_company_id`, `company_binding_version`) and optional revocation policy metadata on `build_mcp_revocation_list_response_assertion` (`revocation_policy_version`, `max_active_grant_version`); stricter validation and body–JWT parity for revocation responses.
+- MCP internal assertions: optional regional authority fields on `build_mcp_approval_assertion` (`grant_version`, `global_company_id`, `company_binding_version`) and optional revocation policy metadata on `build_mcp_revocation_list_response_assertion` (`revocation_policy_version`, `max_active_grant_version`); strict non-negative integers, delegated global pair rules, body–JWT parity for revocation responses (including normalized `"0"` body strings), and `jti`/lifetime invariants on Identity-signed revocation lists.
 - Aggregating MCP gateway skips outbound requests when a downstream URL is not a canonical `/mcp` HTTPS (or loopback HTTP) resource URL.
+- `decode_identity_rs256_jwt` accepts optional `require_claims` (default unchanged).
 
 ### 📚 Documentation
 
-- `docs/mcp.md`: regional authority, revocation versioning, gateway URL validation, and numeric `0` semantics.
+- `docs/mcp.md`: regional authority, revocation versioning, gateway URL validation, numeric `0` semantics, and `require_claims` for Identity JWTs.
 
 ## [0.4.0] - 2026-11-04
 

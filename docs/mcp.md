@@ -126,6 +126,7 @@ Agent access tokens are verified in your MCP view (not inside `McpServer`). Use 
 | Name | Value | Meaning |
 |------|-------|---------|
 | `REVOCATION_CACHE_SECONDS` | `30` | Default TTL in signed revocation list assertions. |
+| `REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS` | `600900` | Hard cap on `exp - iat` for signed revocation list responses (builder and verifier). |
 | JWKS in-memory cache | `300` s | TTL for fetched Identity JWKS documents in `identity_jwks`. |
 
 ## Tagging views and OpenAPI operations
@@ -202,7 +203,7 @@ When approval is needed, `McpServer` builds an `approval_payload` (agent, compan
 
 Wire these callbacks to your Identity approval-state and consume HTTP endpoints. Use `build_mcp_approval_assertion` when the service calls Identity to create an approval (audience `shellui-mcp-approval`, scope `mcp.approval.create`).
 
-**Regional / delegated authority (optional, last parameters):** `grant_version` (`int` or `str`: integers must be non-negative; use `is not None` so `0` is emitted; strings must be non-empty after strip), `global_company_id` (`str`, non-null UUID, canonicalized), and `company_binding_version` (`int` or `str`, same rules as `grant_version`). `bool` is rejected for the version fields. For delegated tenancy, `global_company_id` and `company_binding_version` must both be set or both omitted; together they form the global binding pair (no alternate field names). Personal grants may pass `grant_version=0` with the pair omitted. There is no `**extra_claims` escape hatch—reserved claim names cannot be overridden by an arbitrary dict.
+**Regional / delegated authority (optional, last parameters):** `grant_version` (optional `int`: non-negative; omit the argument entirely for personal grants with no baseline claim—there is **no** default to `0`), `global_company_id` (`str`, non-null UUID, canonicalized), and `company_binding_version` (required `int` when `global_company_id` is set; **use explicit `0` for the personal baseline**; `is not None` distinguishes `0` from omitted). When `global_company_id` is set, `grant_version` is **required** and must be a non-negative integer (Identity contract for delegated global grants). `global_company_id` and `company_binding_version` must not appear without the other; `company_binding_version` must be omitted when there is no `global_company_id`. `bool` is rejected for numeric fields. There is no `**extra_claims` escape hatch—reserved claim names cannot be overridden by an arbitrary dict.
 
 Other internal assertion helpers (RS256 via `JWT_SIGNING_KEY` or explicit `private_key_pem` / `kid` / `issuer` kwargs):
 
@@ -235,7 +236,7 @@ Raises `DownstreamTokenRequestError` on failure (check `.status`, default 401).
 
 This library does not verify agent bearer tokens inside `McpServer`. In your `/mcp` view:
 
-1. Require RS256. Use `decode_identity_rs256_jwt` with Identity issuer and JWKS (`{issuer}/.well-known/jwks.json`, or pass `jwks_url` / inline `jwks`).
+1. Require RS256. Use `decode_identity_rs256_jwt` with Identity issuer and JWKS (`{issuer}/.well-known/jwks.json`, or pass `jwks_url` / inline `jwks`). Pass `require_claims=('exp', 'iat', 'sub', 'scope', 'jti')` when the token must include `jti` (revocation and other one-time proofs).
 2. Check audience per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html): the JWT `aud` must match this service's MCP resource URL (`https://your-origin/mcp`). Use `mcp_resource_from_origin` to build the expected value and `access_token_audience_matches` to compare.
 3. Parse required claims (`agent_id`, `scope`, etc.) and reject missing or invalid tokens before calling `handle`.
 
@@ -251,7 +252,7 @@ Resource URLs must be absolute `https` (or `http` on loopback only), path exactl
 
 Services poll Identity for revoked agents. Identity should sign responses with `build_mcp_revocation_list_response_assertion` (RS256 via `JWT_SIGNING_KEY`).
 
-Optional **last** kwargs `revocation_policy_version` and `max_active_grant_version` (non-negative `int` or non-empty `str`, `0` included when passed) are copied into the signed JWT. The HTTP response body must repeat those values **exactly** as in the signed claims (same equality as JSON); if the JWT omits a key, the body must not add an extra unsigned copy—verification fails closed. `verify_mcp_revocation_list_response` returns them when present; `parse_trusted_revocation_poll_response` still yields the same three-tuple `(revoked_ids, cache_seconds, agent_rows)` for backward compatibility.
+Optional **last** kwargs `revocation_policy_version` and `max_active_grant_version` (non-negative `int` or `None` to omit) are copied into the signed JWT as JSON numbers. The HTTP body must repeat each key that appears in the JWT with the **same numeric value**: native JSON integers compare equal to a body field that is the decimal string of digits only (e.g. signed `0` and body `"0"`). If a key is absent from the JWT, the body must not include it; if it is present in the JWT, the body must include it—mismatch raises `InternalAssertionError`. `verify_mcp_revocation_list_response` always includes both keys: `int` when signed, or `None` when absent from the JWT (trusted stage still exposes “missing” as `None` without trusting an unsigned body). `parse_trusted_revocation_poll_response` still yields the same three-tuple `(revoked_ids, cache_seconds, agent_rows)` for backward compatibility. Revocation list assertions require `jti` and enforce `iat`/`exp` invariants including a maximum span (`REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS`).
 
 Company-bound agent rows in `agents` travel inside the signed payload only—compare full structures (opaque JSON) against the unsigned envelope so a trusted `max_active_grant_version` or binding change cannot be spoofed without breaking the signature.
 

@@ -102,6 +102,7 @@ def decode_identity_rs256_jwt(
     jwks_url: str | None = None,
     jwks: dict[str, Any] | None = None,
     timeout: float = 10.0,
+    require_claims: tuple[str, ...] = ('exp', 'iat', 'sub', 'scope'),
 ) -> dict[str, Any]:
     header = jwt.get_unverified_header(token)
     if header.get('alg') != 'RS256':
@@ -115,7 +116,7 @@ def decode_identity_rs256_jwt(
             algorithms=['RS256'],
             audience=audience,
             issuer=issuer,
-            options={'require': ['exp', 'iat', 'sub', 'scope']},
+            options={'require': list(require_claims)},
         )
     except jwt.PyJWTError as exc:
         raise IdentityJwksError('Invalid Identity JWT.') from exc

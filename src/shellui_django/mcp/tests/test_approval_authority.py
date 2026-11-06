@@ -69,15 +69,62 @@ class ApprovalAuthoritySignatureTests(unittest.TestCase):
             issuer=TEST_ISSUER,
             global_company_id=GLOBAL_UUID.upper().replace('-', ''),
             company_binding_version=2,
-            grant_version='v1',
+            grant_version=1,
         )
         claims = self._verify(token)
         self.assertEqual(claims['global_company_id'], GLOBAL_UUID)
         self.assertEqual(claims['company_binding_version'], 2)
-        self.assertEqual(claims['grant_version'], 'v1')
+        self.assertEqual(claims['grant_version'], 1)
+
+    def test_delegated_requires_grant_version(self):
+        with self.assertRaises(InternalAssertionError):
+            build_mcp_approval_assertion(
+                company_id=10,
+                agent_id='a1',
+                service='saas',
+                action='t1',
+                arguments_hash='abc',
+                audience_url=TEST_TARGET,
+                private_key_pem=self.private_pem,
+                kid=self.kid,
+                issuer=TEST_ISSUER,
+                global_company_id=GLOBAL_UUID,
+                company_binding_version=0,
+            )
+
+    def test_binding_version_required_when_global_set(self):
+        with self.assertRaises(InternalAssertionError):
+            build_mcp_approval_assertion(
+                company_id=10,
+                agent_id='a1',
+                service='saas',
+                action='t1',
+                arguments_hash='abc',
+                audience_url=TEST_TARGET,
+                private_key_pem=self.private_pem,
+                kid=self.kid,
+                issuer=TEST_ISSUER,
+                global_company_id=GLOBAL_UUID,
+                grant_version=0,
+            )
+
+    def test_grant_version_omitted_personal_no_claim(self):
+        token = build_mcp_approval_assertion(
+            company_id=1,
+            agent_id='a1',
+            service='saas',
+            action='t1',
+            arguments_hash='abc',
+            audience_url=TEST_TARGET,
+            private_key_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+        )
+        claims = self._verify(token)
+        self.assertNotIn('grant_version', claims)
 
     def test_incomplete_global_pair_rejected(self):
-        with self.assertRaises(InternalAssertionError) as ctx:
+        with self.assertRaises(InternalAssertionError):
             build_mcp_approval_assertion(
                 company_id=1,
                 agent_id='a1',
@@ -90,7 +137,21 @@ class ApprovalAuthoritySignatureTests(unittest.TestCase):
                 issuer=TEST_ISSUER,
                 global_company_id=GLOBAL_UUID,
             )
-        self.assertIn('both', str(ctx.exception).lower())
+
+    def test_binding_without_global_rejected(self):
+        with self.assertRaises(InternalAssertionError):
+            build_mcp_approval_assertion(
+                company_id=1,
+                agent_id='a1',
+                service='saas',
+                action='t1',
+                arguments_hash='x',
+                audience_url=TEST_TARGET,
+                private_key_pem=self.private_pem,
+                kid=self.kid,
+                issuer=TEST_ISSUER,
+                company_binding_version=0,
+            )
 
     def test_malformed_global_company_id_rejected(self):
         with self.assertRaises(InternalAssertionError):
