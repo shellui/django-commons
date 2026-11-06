@@ -14,6 +14,7 @@ from django.http import HttpRequest, JsonResponse
 
 from shellui_django.mcp.openapi_tools import tools_from_schema
 from shellui_django.mcp.rate_limit import check_agent_rate_limit
+from shellui_django.mcp.resources import is_valid_mcp_service_url
 from shellui_django.mcp.server import McpServer
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,9 @@ class AggregatingMcpServer(McpServer):
         return None
 
     def _fetch_remote_tools_list(self, *, mcp_url: str, bearer_token: str) -> list[dict[str, Any]] | None:
+        if not is_valid_mcp_service_url(mcp_url):
+            logger.warning('MCP gateway tools/list rejected invalid downstream URL url=%s', mcp_url)
+            return None
         cache_key = f'{_TOOLS_CACHE_PREFIX}{mcp_url}'
         cached = self._cache().get(cache_key)
         if isinstance(cached, list):
@@ -292,6 +296,18 @@ class AggregatingMcpServer(McpServer):
         mcp_url = self._gateway.get_service_urls().get(service_id)
         if not mcp_url:
             return JsonResponse(self._error(req_id, -32602, 'Service unavailable'))
+        if not is_valid_mcp_service_url(mcp_url):
+            logger.warning(
+                'MCP gateway tools/call rejected invalid downstream URL service=%s url=%s',
+                service_id,
+                mcp_url,
+            )
+            return JsonResponse(
+                self._result(
+                    req_id,
+                    {'content': [{'type': 'text', 'text': 'Service unavailable.'}], 'isError': True},
+                )
+            )
         token = self._gateway.mint_downstream_token(agent, mcp_url)
         downstream_params = dict(params)
         downstream_params['name'] = route['downstream_name']

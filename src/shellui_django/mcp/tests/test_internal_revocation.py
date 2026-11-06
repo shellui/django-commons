@@ -75,6 +75,29 @@ class RevocationListJwksVerificationTests(unittest.TestCase):
                 jwks=self.jwks,
             )
 
+    def test_unsigned_envelope_when_signed_claim_has_policy_version(self):
+        agents = []
+        assertion = sign_test_revocation_list_assertion(
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+            revoked_agent_ids=[],
+            agents=agents,
+            revocation_policy_version=0,
+        )
+        payload = {
+            'revoked_agent_ids': [],
+            'agents': agents,
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'revocation_assertion': assertion,
+        }
+        with self.assertRaises(InternalAssertionError):
+            verify_mcp_revocation_list_response(
+                payload,
+                expected_issuer=TEST_ISSUER,
+                jwks=self.jwks,
+            )
+
     def test_hs256_assertion_rejected(self):
         now = int(time.time())
         hs256_token = jwt.encode(
@@ -107,3 +130,63 @@ class RevocationListJwksVerificationTests(unittest.TestCase):
                 jwks=self.jwks,
             )
         self.assertIn('RS256', str(ctx.exception))
+
+    def test_optional_policy_and_grant_versions_in_body_and_return(self):
+        agents = [{'agent_id': 'a', 'company_id': 1}]
+        assertion = sign_test_revocation_list_assertion(
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+            revoked_agent_ids=['a'],
+            agents=agents,
+            cache_seconds=REVOCATION_CACHE_SECONDS,
+            revocation_policy_version=0,
+            max_active_grant_version='edge',
+        )
+        payload = {
+            'revoked_agent_ids': ['a'],
+            'agents': agents,
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'revocation_policy_version': 0,
+            'max_active_grant_version': 'edge',
+            'revocation_assertion': assertion,
+        }
+        trusted = verify_mcp_revocation_list_response(
+            payload,
+            expected_issuer=TEST_ISSUER,
+            jwks=self.jwks,
+        )
+        self.assertEqual(trusted['revocation_policy_version'], 0)
+        self.assertEqual(trusted['max_active_grant_version'], 'edge')
+        ids, cache, rows = parse_trusted_revocation_poll_response(
+            payload,
+            expected_issuer=TEST_ISSUER,
+            jwks=self.jwks,
+        )
+        self.assertEqual(ids, frozenset({'a'}))
+        self.assertEqual(cache, REVOCATION_CACHE_SECONDS)
+        self.assertEqual(rows, agents)
+
+    def test_body_version_mismatch_fails_closed(self):
+        agents = []
+        assertion = sign_test_revocation_list_assertion(
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=TEST_ISSUER,
+            revoked_agent_ids=[],
+            agents=agents,
+            revocation_policy_version=1,
+        )
+        payload = {
+            'revoked_agent_ids': [],
+            'agents': agents,
+            'cache_seconds': REVOCATION_CACHE_SECONDS,
+            'revocation_policy_version': 2,
+            'revocation_assertion': assertion,
+        }
+        with self.assertRaises(InternalAssertionError):
+            verify_mcp_revocation_list_response(
+                payload,
+                expected_issuer=TEST_ISSUER,
+                jwks=self.jwks,
+            )

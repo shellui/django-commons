@@ -76,7 +76,7 @@ Wire the gateway with `McpGatewayConfig`:
 
 Behavior:
 
-- **`tools/list`**: Merges local tools with each allowed downstream catalog. Allowed means the service id is in both JWT `scope` and the agent's `services_allowed` list. Downstream list failures omit that service only.
+- **`tools/list`**: Merges local tools with each allowed downstream catalog. Allowed means the service id is in both JWT `scope` and the agent's `services_allowed` list. Downstream list failures omit that service only. Downstream MCP URLs must be canonical HTTPS resource URLs ending in `/mcp` (same rules as agent token `aud` / `normalize_resource_indicator`); invalid URLs are skipped so a misconfiguration cannot point the gateway at arbitrary hosts (including foreign clouds outside your Shellui deployment).
 - **Tool names**: Downstream tools keep their name when unique. Collisions become `{service_id}__{name}` (then `{service_id}__{name}__gateway` if still colliding).
 - **`tools/call`**: Routes using a short-lived cache keyed by exported tool name. Forwards JSON-RPC to the configured URL with a minted downstream token. Does not re-run approvals or execute writes on behalf of downstream services.
 - **`initialize`**: Returns `instructions` listing connected services for the agent.
@@ -180,6 +180,8 @@ Your MCP view must pass verified claims into `handle`. Claims read by this libra
 | `mcp_read` | `safe` | `safe` or `sensitive` (response masking). |
 | `mcp_destructive` | false | When true and `mcp_access` is `full`, destructive tools skip the approval gate. |
 
+Numeric claims (for example `company_id`) use normal JSON numbers. `0` is a real value: treat a present `0` and a missing claim as different; do not collapse them in verification logic.
+
 ## Access modes and approvals
 
 Write gate logic lives in `decide_write`:
@@ -200,6 +202,8 @@ When approval is needed, `McpServer` builds an `approval_payload` (agent, compan
 
 Wire these callbacks to your Identity approval-state and consume HTTP endpoints. Use `build_mcp_approval_assertion` when the service calls Identity to create an approval (audience `shellui-mcp-approval`, scope `mcp.approval.create`).
 
+**Regional / delegated authority (optional, last parameters):** `grant_version` (`int` or `str`: integers must be non-negative; use `is not None` so `0` is emitted; strings must be non-empty after strip), `global_company_id` (`str`, non-null UUID, canonicalized), and `company_binding_version` (`int` or `str`, same rules as `grant_version`). `bool` is rejected for the version fields. For delegated tenancy, `global_company_id` and `company_binding_version` must both be set or both omitted; together they form the global binding pair (no alternate field names). Personal grants may pass `grant_version=0` with the pair omitted. There is no `**extra_claims` escape hatch—reserved claim names cannot be overridden by an arbitrary dict.
+
 Other internal assertion helpers (RS256 via `JWT_SIGNING_KEY` or explicit `private_key_pem` / `kid` / `issuer` kwargs):
 
 | Helper | Audience | Scope |
@@ -208,6 +212,8 @@ Other internal assertion helpers (RS256 via `JWT_SIGNING_KEY` or explicit `priva
 | `build_mcp_revocation_assertion` | `shellui-mcp-revocation` | `mcp.revocation.read` |
 
 Verify incoming assertions with `verify_mcp_internal_assertion` (alias of `verify_rs256_mcp_assertion`). Pass the caller JWKS document or public PEM, the expected caller issuer (must match `iss`), audience, scope, and Identity public URL as `expected_target`. RS256 only; optional `register_jti` for replay protection.
+
+Service-to-Identity assertions are still signed with the **caller's** RS256 material (`JWT_SIGNING_KEY` or explicit PEM/`kid`); Identity verifies with the caller's JWKS. Use the same pattern for regional authority fields: sign only through `build_mcp_*` helpers so proofs stay aligned with verification.
 
 ### Downstream MCP token delegation (`shellui_django.mcp.delegation`)
 
@@ -245,10 +251,14 @@ Resource URLs must be absolute `https` (or `http` on loopback only), path exactl
 
 Services poll Identity for revoked agents. Identity should sign responses with `build_mcp_revocation_list_response_assertion` (RS256 via `JWT_SIGNING_KEY`).
 
+Optional **last** kwargs `revocation_policy_version` and `max_active_grant_version` (non-negative `int` or non-empty `str`, `0` included when passed) are copied into the signed JWT. The HTTP response body must repeat those values **exactly** as in the signed claims (same equality as JSON); if the JWT omits a key, the body must not add an extra unsigned copy—verification fails closed. `verify_mcp_revocation_list_response` returns them when present; `parse_trusted_revocation_poll_response` still yields the same three-tuple `(revoked_ids, cache_seconds, agent_rows)` for backward compatibility.
+
+Company-bound agent rows in `agents` travel inside the signed payload only—compare full structures (opaque JSON) against the unsigned envelope so a trusted `max_active_grant_version` or binding change cannot be spoofed without breaking the signature.
+
 Consumers should use `parse_trusted_revocation_poll_response` or `verify_mcp_revocation_list_response`:
 
 - Verifies the embedded assertion with Identity JWKS (audience `shellui-mcp-revocation`, scope `mcp.revocation.list`, subject `identity`).
-- Cross-checks `revoked_agent_ids`, `cache_seconds`, and `agents` between the JSON body and the JWT.
+- Cross-checks `revoked_agent_ids`, `cache_seconds`, and `agents` between the JSON body and the JWT, and optional version fields when Identity includes them in the assertion.
 - On any error, treat data as untrusted (**fail closed**).
 
 Pass a callable `identity_revocation_check(agent_id, company_id)` into `McpServer`. Return `True` when the agent is revoked. `handle` responds with `403` and `agent_revoked`.

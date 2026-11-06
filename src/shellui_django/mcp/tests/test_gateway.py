@@ -160,6 +160,62 @@ class McpGatewayTests(SimpleTestCase):
         self.assertIn('api_v1_mcp_services_list', names)
 
     @patch('shellui_django.mcp.gateway.requests.post')
+    def test_invalid_downstream_mcp_url_skips_remote_tools(self, post):
+        bad_url_config = McpGatewayConfig(
+            get_service_urls=lambda: {'identity': IDENTITY_MCP, 'storage': 'https://foreign.example.com/other'},
+            resolve_agent=self.gateway_config.resolve_agent,
+            mint_downstream_token=self.gateway_config.mint_downstream_token,
+            local_service_id='identity',
+        )
+        server = AggregatingMcpServer(
+            gateway=bad_url_config,
+            schema_provider=lambda: LOCAL_SCHEMA,
+            urlconf='shellui_django.mcp.tests.mcp_routing_urlconf',
+            service_name='identity',
+        )
+        response = server.handle(
+            self.factory.post('/mcp', data=_rpc('tools/list'), content_type='application/json'),
+            agent_claims=self.claims_a,
+        )
+        self.assertEqual(response.status_code, 200)
+        post.assert_not_called()
+        names = {t['name'] for t in json.loads(response.content)['result']['tools']}
+        self.assertIn('api_v1_mcp_services_list', names)
+
+    @patch('shellui_django.mcp.gateway.requests.post')
+    def test_tools_call_invalid_downstream_url_fails_closed(self, post):
+        bad_url_config = McpGatewayConfig(
+            get_service_urls=lambda: {'identity': IDENTITY_MCP, 'storage': 'https://evil.test/nope'},
+            resolve_agent=self.gateway_config.resolve_agent,
+            mint_downstream_token=self.gateway_config.mint_downstream_token,
+            local_service_id='identity',
+        )
+        server = AggregatingMcpServer(
+            gateway=bad_url_config,
+            schema_provider=lambda: LOCAL_SCHEMA,
+            urlconf='shellui_django.mcp.tests.mcp_routing_urlconf',
+            service_name='identity',
+        )
+        cache.set(
+            'mcp_gateway:route:storage_v1_run',
+            {'service_id': 'storage', 'downstream_name': 'storage_v1_run'},
+            60,
+        )
+        response = server.handle(
+            self.factory.post(
+                '/mcp',
+                data=_rpc('tools/call', name='storage_v1_run', arguments={}),
+                content_type='application/json',
+            ),
+            agent_claims=self.claims_a,
+        )
+        self.assertEqual(response.status_code, 200)
+        body = json.loads(response.content)
+        self.assertTrue(body['result']['isError'])
+        self.assertIn('unavailable', body['result']['content'][0]['text'].lower())
+        post.assert_not_called()
+
+    @patch('shellui_django.mcp.gateway.requests.post')
     def test_collision_adds_service_namespace(self, post):
         dup_tool = {'name': 'shared_tool', 'description': 'dup'}
 

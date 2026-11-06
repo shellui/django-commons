@@ -37,6 +37,41 @@ REVOCATION_CACHE_SECONDS = 30
 REVOCATION_LIST_ASSERTION_LIFETIME_SECONDS = REVOCATION_CACHE_SECONDS
 
 
+def _strict_non_negative_int(value: Any, *, field: str) -> int:
+    if isinstance(value, bool):
+        raise InternalAssertionError(f'{field} must be a non-negative integer.')
+    if isinstance(value, int):
+        if value < 0:
+            raise InternalAssertionError(f'{field} must be non-negative.')
+        return value
+    raise InternalAssertionError(f'{field} must be a non-negative integer.')
+
+
+def _version_claim(value: int | str | None, *, field: str) -> int | str | None:
+    """Normalize optional signed version fields: non-negative int or non-empty str; None omitted."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise InternalAssertionError(f'{field} must be an int, str, or None.')
+    if isinstance(value, int):
+        return _strict_non_negative_int(value, field=field)
+    s = str(value).strip()
+    if not s:
+        raise InternalAssertionError(f'{field} must be a non-empty string when provided.')
+    return s
+
+
+def _normalize_uuid_string(value: str | None, *, field: str) -> str:
+    raw = str(value or '').strip()
+    if not raw:
+        raise InternalAssertionError(f'{field} is required when provided.')
+    try:
+        parsed = uuid.UUID(raw)
+    except ValueError as exc:
+        raise InternalAssertionError(f'{field} must be a UUID string.') from exc
+    return str(parsed)
+
+
 class InternalAssertionError(Exception):
     def __init__(self, message: str, *, status: int = 401):
         super().__init__(message)
@@ -98,14 +133,26 @@ def build_mcp_approval_assertion(
     private_key_pem: str | None = None,
     kid: str | None = None,
     issuer: str | None = None,
+    grant_version: int | str | None = None,
+    global_company_id: str | None = None,
+    company_binding_version: int | str | None = None,
 ) -> str:
     now = int(time.time())
-    claims = {
+    company_id_int = _strict_non_negative_int(company_id, field='company_id')
+    has_global_company = global_company_id is not None
+    has_binding_ver = company_binding_version is not None
+    if has_global_company != has_binding_ver:
+        raise InternalAssertionError(
+            'global_company_id and company_binding_version must both be set or both omitted for delegated authority.'
+        )
+    grant_ver_claim = _version_claim(grant_version, field='grant_version')
+    binding_ver_claim = _version_claim(company_binding_version, field='company_binding_version')
+    claims: dict[str, Any] = {
         'iss': _service_issuer(issuer),
         'aud': APPROVAL_AUDIENCE,
         'sub': f'agent:{agent_id}',
         'scope': APPROVAL_SCOPE,
-        'company_id': company_id,
+        'company_id': company_id_int,
         'agent_id': agent_id,
         'service': service,
         'action': action,
@@ -115,6 +162,11 @@ def build_mcp_approval_assertion(
         'exp': now + lifetime_seconds,
         'jti': uuid.uuid4().hex,
     }
+    if grant_ver_claim is not None:
+        claims['grant_version'] = grant_ver_claim
+    if has_global_company:
+        claims['global_company_id'] = _normalize_uuid_string(global_company_id, field='global_company_id')
+        claims['company_binding_version'] = binding_ver_claim
     return _encode_rs256_assertion(claims, private_key_pem=private_key_pem, kid=kid)
 
 
@@ -124,11 +176,15 @@ def build_mcp_revocation_list_response_assertion(
     agents: list[dict[str, Any]] | None = None,
     cache_seconds: int = REVOCATION_CACHE_SECONDS,
     lifetime_seconds: int = REVOCATION_LIST_ASSERTION_LIFETIME_SECONDS,
+    revocation_policy_version: int | str | None = None,
+    max_active_grant_version: int | str | None = None,
 ) -> str:
     """Identity signs revocation poll responses so services can fail closed on tampering."""
     now = int(time.time())
     agent_rows = agents or []
-    claims = {
+    policy_ver = _version_claim(revocation_policy_version, field='revocation_policy_version')
+    max_grant_ver = _version_claim(max_active_grant_version, field='max_active_grant_version')
+    claims: dict[str, Any] = {
         'iss': _identity_issuer(),
         'aud': REVOCATION_AUDIENCE,
         'sub': 'identity',
@@ -140,6 +196,10 @@ def build_mcp_revocation_list_response_assertion(
         'exp': now + lifetime_seconds,
         'jti': uuid.uuid4().hex,
     }
+    if policy_ver is not None:
+        claims['revocation_policy_version'] = policy_ver
+    if max_grant_ver is not None:
+        claims['max_active_grant_version'] = max_grant_ver
     try:
         return _encode_rs256_assertion(claims)
     except InternalAssertionError as exc:
@@ -358,11 +418,34 @@ def verify_mcp_revocation_list_response(
     body_agents = payload.get('agents')
     if body_agents is not None and body_agents != claimed_agents:
         raise InternalAssertionError('Revocation list agents mismatch.')
-    return {
+    out: dict[str, Any] = {
         'revoked_agent_ids': claimed_ids,
         'agents': claimed_agents,
         'cache_seconds': claimed_cache,
     }
+    claim_policy = claims.get('revocation_policy_version', None)
+    claim_max_grant = claims.get('max_active_grant_version', None)
+    body_policy = payload.get('revocation_policy_version', None)
+    body_max_grant = payload.get('max_active_grant_version', None)
+    if 'revocation_policy_version' in claims:
+        if 'revocation_policy_version' not in payload:
+            raise InternalAssertionError('Revocation list body mismatch.')
+        if body_policy != claim_policy:
+            raise InternalAssertionError('Revocation list body mismatch.')
+    elif 'revocation_policy_version' in payload:
+        raise InternalAssertionError('Revocation list body mismatch.')
+    if 'max_active_grant_version' in claims:
+        if 'max_active_grant_version' not in payload:
+            raise InternalAssertionError('Revocation list body mismatch.')
+        if body_max_grant != claim_max_grant:
+            raise InternalAssertionError('Revocation list body mismatch.')
+    elif 'max_active_grant_version' in payload:
+        raise InternalAssertionError('Revocation list body mismatch.')
+    if claim_policy is not None:
+        out['revocation_policy_version'] = claim_policy
+    if claim_max_grant is not None:
+        out['max_active_grant_version'] = claim_max_grant
+    return out
 
 
 def parse_trusted_revocation_poll_response(
