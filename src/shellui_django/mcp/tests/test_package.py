@@ -22,5 +22,12 @@ class ShelluiMcpPackageTests(SimpleTestCase):
             ).allowed
         )
         self.assertTrue(decide_write(method='POST', access_mode=ACCESS_FULL, destructive=False, allow_destructive_without_asking=False).allowed)
+        destructive_full = decide_write(
+            method='POST',
+            access_mode=ACCESS_FULL,
+            destructive=True,
+            allow_destructive_without_asking=True,
+        )
+        self.assertTrue(destructive_full.needs_approval)
         ask = decide_write(method='POST', access_mode=ACCESS_ASK, destructive=False, allow_destructive_without_asking=False)
         self.assertTrue(ask.needs_approval)

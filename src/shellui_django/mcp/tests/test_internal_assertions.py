@@ -155,6 +155,24 @@ class InternalAssertionRs256Tests(unittest.TestCase):
         with self.assertRaises(InternalAssertionError):
             self._verify(token)
 
+    def test_bool_iat_rejected_for_lifetime(self):
+        now = int(time.time())
+        claims = {
+            'iss': TEST_ISSUER,
+            'aud': REVOCATION_AUDIENCE,
+            'sub': 'service',
+            'scope': REVOCATION_SCOPE,
+            'target': TEST_TARGET,
+            'iat': True,
+            'exp': now + 60,
+            'jti': uuid.uuid4().hex,
+        }
+        token = jwt.encode(claims, self.private_pem, algorithm='RS256', headers={'kid': self.kid})
+        token = token.decode('utf-8') if isinstance(token, bytes) else token
+        with self.assertRaises(InternalAssertionError) as ctx:
+            self._verify(token)
+        self.assertIn('iat', str(ctx.exception).lower())
+
     def test_wrong_audience(self):
         token = self._sign_revocation()
         with self.assertRaises(InternalAssertionError):
