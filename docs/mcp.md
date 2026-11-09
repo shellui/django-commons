@@ -26,7 +26,7 @@ Agent JWT  -->  Your /mcp view (verify token, build agent_claims)
 
 `tools_from_schema` reads a drf-spectacular OpenAPI document. Only operations whose `tags` include `mcp-tools` become tools. Tool names come from `operationId` (slugified) or `{method}_{path}`.
 
-Each tool's input schema includes fixed `path` and `method`, optional `path_params`, `query`, and `body` objects derived from the operation. Extra query or body fields are rejected at call time.
+Each tool's input schema includes fixed `path` and `method`, optional `path_params`, `query`, and `body` objects derived from the operation. Request body and parameter schemas resolve OpenAPI `$ref` values against `components.schemas` (drf-spectacular often emits refs only). Typed fields are copied into the tool schema; untyped JSONField fragments become free-form objects. Extra query or body fields are rejected at call time.
 
 ### `McpServer`
 
@@ -240,7 +240,7 @@ This library does not verify agent bearer tokens inside `McpServer`. In your `/m
 2. Check audience per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html): the JWT `aud` must match this service's MCP resource URL (`https://your-origin/mcp`). Use `mcp_resource_from_origin` to build the expected value and `access_token_audience_matches` to compare.
 3. Parse required claims (`agent_id`, `scope`, etc.) and reject missing or invalid tokens before calling `handle`.
 
-Resource URLs must be absolute `https` (or `http` on loopback only), path exactly `/mcp`, no query or fragment.
+Resource URLs must be absolute `https` (or `http` on loopback, private, or CGNAT/`100.64.0.0/10` IP literals for local/LAN/Tailscale), path exactly `/mcp`, no query or fragment. Public hostnames over plain `http` are rejected.
 
 ## Tenant isolation
 

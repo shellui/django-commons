@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 from urllib.parse import urlsplit
 
 MCP_RESOURCE_SUFFIX = '/mcp'
+_LOOPBACK_HOSTS = frozenset({'127.0.0.1', 'localhost', '::1'})
+# RFC 6598 shared space (Tailscale etc.). Not ``is_private`` on modern Python.
+_CGNAT_SHARED = ipaddress.ip_network('100.64.0.0/10')
 
 
 def mcp_resource_from_origin(origin: str) -> str:
@@ -16,10 +20,22 @@ def mcp_resource_from_origin(origin: str) -> str:
     return f'{base}{MCP_RESOURCE_SUFFIX}'
 
 
+def _http_dev_host_allowed(host: str | None) -> bool:
+    """Loopback names/IPs and private/CGNAT IP literals (LAN / Tailscale)."""
+    h = (host or '').lower()
+    if h in _LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return bool(ip.is_loopback or ip.is_private or ip.is_link_local or ip in _CGNAT_SHARED)
+
+
 def normalize_resource_indicator(raw: str | None) -> str | None:
     """
     Canonical resource URL for authorize/token/refresh ``resource`` parameter.
-    Must be absolute https (or http loopback) ending in ``/mcp`` with no fragment.
+    Must be absolute https (or http on loopback/private IP) ending in ``/mcp`` with no fragment.
     """
     s = str(raw or '').strip()
     if not s or '#' in s:
@@ -38,8 +54,7 @@ def normalize_resource_indicator(raw: str | None) -> str | None:
         return None
     if parsed.query or parsed.fragment:
         return None
-    host = (parsed.hostname or '').lower()
-    if parsed.scheme == 'http' and host not in ('127.0.0.1', 'localhost', '::1'):
+    if parsed.scheme == 'http' and not _http_dev_host_allowed(parsed.hostname):
         return None
     return s
 
