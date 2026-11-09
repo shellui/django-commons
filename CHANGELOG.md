@@ -23,6 +23,17 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.5.1] - 2026-11-09
+
+### 🐛 Bug Fixes
+
+- MCP resource indicators: allow plain `http` for private and CGNAT (RFC 6598 `100.64.0.0/10`, e.g. Tailscale) IP literals in addition to loopback. Public hostnames over `http` remain rejected.
+- `tools_from_schema`: resolve OpenAPI `$ref` request bodies and emit typed `body` / `query` properties. Previously `$ref`-only bodies (common with drf-spectacular) produced an empty `body` object, so MCP clients could not submit fields such as template draft `subject` / `document`. Untyped JSONField fragments become free-form objects (`additionalProperties: true`).
+
+### 📚 Documentation
+
+- Document private/CGNAT `http` resource URLs and `$ref` body expansion for MCP tools.
+
 ## [0.5.0] - 2026-11-06
 
 ### 🛠 Improvements

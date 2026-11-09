@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from typing import Any
 
 from shellui_django.mcp.openapi_mcp import tool_access_flags
@@ -11,8 +12,86 @@ from shellui_django.mcp.routing import path_parameter_names
 MCP_TOOL_TAG = 'mcp-tools'
 
 
-def _parameter_field_names(operation: dict[str, Any], *, location: str) -> tuple[list[str], list[str]]:
-    names: list[str] = []
+def _components(root: dict[str, Any]) -> dict[str, Any]:
+    return (root.get('components') or {}).get('schemas') or {}
+
+
+def _resolve_schema(
+    schema: dict[str, Any] | None,
+    root: dict[str, Any],
+    *,
+    _seen: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    if not schema or not isinstance(schema, dict):
+        return {}
+    ref = schema.get('$ref')
+    if isinstance(ref, str) and ref.startswith('#/components/schemas/'):
+        name = ref.rsplit('/', 1)[-1]
+        seen = _seen or frozenset()
+        if name in seen:
+            return {
+                'type': 'object',
+                'additionalProperties': True,
+                'description': f'Circular $ref: {ref}',
+            }
+        target = _components(root).get(name)
+        if isinstance(target, dict):
+            return _resolve_schema(deepcopy(target), root, _seen=seen | {name})
+        return {}
+    if '$ref' in schema and len(schema) > 1:
+        resolved = _resolve_schema({'$ref': schema['$ref']}, root, _seen=_seen)
+        return {**resolved, **{k: v for k, v in schema.items() if k != '$ref'}}
+    return schema
+
+
+def _client_prop_schema(node: Any) -> dict[str, Any]:
+    """JSON Schema fragment safe for strict MCP clients."""
+    if not isinstance(node, dict):
+        return {'type': 'string'}
+    out: dict[str, Any] = {}
+    if node.get('description'):
+        out['description'] = str(node['description'])
+    typ = node.get('type')
+    if isinstance(typ, list):
+        non_null = [t for t in typ if t != 'null']
+        typ = non_null[0] if non_null else 'string'
+    if typ in {'string', 'integer', 'number', 'boolean'}:
+        out['type'] = typ
+        if typ == 'string' and node.get('format'):
+            out['format'] = str(node['format'])
+        return out
+    if typ == 'array':
+        out['type'] = 'array'
+        items = node.get('items')
+        out['items'] = _client_prop_schema(items if isinstance(items, dict) else {'type': 'string'})
+        return out
+    if typ == 'object' or isinstance(node.get('properties'), dict):
+        out['type'] = 'object'
+        props = node.get('properties') if isinstance(node.get('properties'), dict) else {}
+        out['properties'] = {str(k): _client_prop_schema(v) for k, v in props.items()}
+        # Named props stay closed; empty object schemas (JSONField) stay open.
+        out['additionalProperties'] = bool(node.get('additionalProperties', False)) if props else True
+        req = node.get('required')
+        if isinstance(req, list):
+            required = [str(k) for k in req if str(k) in out['properties']]
+            if required:
+                out['required'] = required
+        return out
+    # drf-spectacular JSONField often emits ``{}`` or description-only nodes.
+    out['type'] = 'object'
+    out['additionalProperties'] = True
+    if not out.get('description'):
+        out['description'] = 'JSON value'
+    return out
+
+
+def _parameter_schemas(
+    operation: dict[str, Any],
+    root: dict[str, Any],
+    *,
+    location: str,
+) -> tuple[dict[str, Any], list[str]]:
+    properties: dict[str, Any] = {}
     required: list[str] = []
     for param in operation.get('parameters') or []:
         if not isinstance(param, dict) or param.get('in') != location:
@@ -20,27 +99,30 @@ def _parameter_field_names(operation: dict[str, Any], *, location: str) -> tuple
         name = param.get('name')
         if not name:
             continue
-        names.append(str(name))
+        key = str(name)
+        raw = param.get('schema') if isinstance(param.get('schema'), dict) else {'type': 'string'}
+        properties[key] = _client_prop_schema(_resolve_schema(raw if isinstance(raw, dict) else {}, root))
         if param.get('required'):
-            required.append(str(name))
-    return names, required
+            required.append(key)
+    return properties, required
 
 
-def _body_field_names(operation: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _body_schemas(operation: dict[str, Any], root: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     request_body = operation.get('requestBody') or {}
     if not isinstance(request_body, dict):
-        return [], []
+        return {}, []
     content = request_body.get('content') or {}
     schema = content.get('application/json', {}).get('schema') or {}
     if not isinstance(schema, dict):
-        return [], []
-    props = schema.get('properties') or {}
+        return {}, []
+    resolved = _resolve_schema(schema, root)
+    props = resolved.get('properties') or {}
     if not isinstance(props, dict):
-        return [], []
-    names = [str(key) for key in props.keys()]
-    required_raw = schema.get('required') or []
-    required = [str(key) for key in required_raw if str(key) in names]
-    return names, required
+        return {}, []
+    properties = {str(key): _client_prop_schema(val) for key, val in props.items()}
+    required_raw = resolved.get('required') or []
+    required = [str(key) for key in required_raw if str(key) in properties]
+    return properties, required
 
 
 def _slug_tool_name(method: str, path: str, operation_id: str | None) -> str:
@@ -69,14 +151,26 @@ def tools_from_schema(schema: dict[str, Any]) -> list[dict[str, Any]]:
             name = _slug_tool_name(method, path, operation.get('operationId'))
             description = (operation.get('summary') or operation.get('description') or name).strip()
             path_params = path_parameter_names(path)
-            query_fields, query_required = _parameter_field_names(operation, location='query')
-            body_fields, body_required = _body_field_names(operation)
+            query_props, query_required = _parameter_schemas(operation, schema, location='query')
+            body_props, body_required = _body_schemas(operation, schema)
             properties: dict[str, Any] = {
                 'path': {'type': 'string', 'const': path},
                 'method': {'type': 'string', 'enum': [method.upper()]},
-                'query': {'type': 'object', 'additionalProperties': False, 'properties': {}},
-                'body': {'type': 'object', 'additionalProperties': False, 'properties': {}},
+                'query': {
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'properties': query_props,
+                },
+                'body': {
+                    'type': 'object',
+                    'additionalProperties': False,
+                    'properties': body_props,
+                },
             }
+            if query_required:
+                properties['query']['required'] = query_required
+            if body_required:
+                properties['body']['required'] = body_required
             required = ['path', 'method']
             if path_params:
                 properties['path_params'] = {
@@ -86,10 +180,6 @@ def tools_from_schema(schema: dict[str, Any]) -> list[dict[str, Any]]:
                     'required': path_params,
                 }
                 required.append('path_params')
-            if query_fields:
-                properties['query']['properties'] = {field: {} for field in query_fields}
-            if body_fields:
-                properties['body']['properties'] = {field: {} for field in body_fields}
             access = tool_access_flags(operation)
             tools.append(
                 {
@@ -106,9 +196,9 @@ def tools_from_schema(schema: dict[str, Any]) -> list[dict[str, Any]]:
                         'method': method.upper(),
                         'operationId': operation.get('operationId'),
                         'path_params': path_params,
-                        'query_fields': query_fields or None,
+                        'query_fields': sorted(query_props.keys()) or None,
                         'query_required': query_required or None,
-                        'body_fields': body_fields or None,
+                        'body_fields': sorted(body_props.keys()) or None,
                         'body_required': body_required or None,
                         'read_only': access['read_only'],
                         'destructive': access['destructive'],

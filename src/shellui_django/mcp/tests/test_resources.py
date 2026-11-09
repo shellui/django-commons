@@ -17,6 +17,19 @@ class McpResourceTests(SimpleTestCase):
             'https://auth.example.com/mcp',
         )
         self.assertIsNone(normalize_resource_indicator('https://auth.example.com/other'))
+        self.assertEqual(
+            normalize_resource_indicator('http://127.0.0.1:8000/mcp'),
+            'http://127.0.0.1:8000/mcp',
+        )
+        self.assertEqual(
+            normalize_resource_indicator('http://100.127.19.94:8001/mcp'),
+            'http://100.127.19.94:8001/mcp',
+        )
+        self.assertEqual(
+            normalize_resource_indicator('http://192.168.1.10:8001/mcp'),
+            'http://192.168.1.10:8001/mcp',
+        )
+        self.assertIsNone(normalize_resource_indicator('http://evil.example.com/mcp'))
 
     def test_audience_match(self):
         payload = {'aud': 'https://auth.example.com/mcp'}
