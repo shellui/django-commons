@@ -44,31 +44,147 @@ def _resolve_schema(
     return schema
 
 
-def _client_prop_schema(node: Any) -> dict[str, Any]:
+_SCALAR_TYPES = frozenset({'string', 'integer', 'number', 'boolean'})
+
+
+def _free_form(description: str | None = None) -> dict[str, Any]:
+    return {'type': 'object', 'additionalProperties': True, 'description': description or 'JSON value'}
+
+
+def _is_null_variant(node: Any) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if node.get('type') == 'null':
+        return True
+    enum = node.get('enum')
+    return isinstance(enum, list) and len(enum) > 0 and all(v is None for v in enum)
+
+
+def _enum_type(values: list[Any]) -> str | None:
+    non_null = [v for v in values if v is not None]
+    if not non_null:
+        return None
+    if all(isinstance(v, bool) for v in non_null):
+        return 'boolean'
+    if all(isinstance(v, int) and not isinstance(v, bool) for v in non_null):
+        return 'integer'
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null):
+        return 'number'
+    if all(isinstance(v, str) for v in non_null):
+        return 'string'
+    return None
+
+
+def _flatten(node: dict[str, Any], root: dict[str, Any], seen: frozenset[str]) -> tuple[dict[str, Any], frozenset[str], bool]:
+    """Resolve ``$ref`` and single-schema ``allOf`` / ``oneOf`` / ``anyOf`` wrappers.
+
+    Returns the flattened node, the refs visited, and whether null is allowed.
+    """
+    nullable = bool(node.get('nullable'))
+    for _ in range(32):
+        ref = node.get('$ref')
+        if isinstance(ref, str):
+            name = ref.rsplit('/', 1)[-1]
+            target = _components(root).get(name) if ref.startswith('#/components/schemas/') else None
+            if name in seen or not isinstance(target, dict):
+                return _free_form(f'Unresolved $ref: {ref}'), seen, nullable
+            seen = seen | {name}
+            siblings = {k: v for k, v in node.items() if k != '$ref'}
+            node = {**deepcopy(target), **siblings}
+            nullable = nullable or bool(node.get('nullable'))
+            continue
+        all_of = node.get('allOf')
+        if isinstance(all_of, list) and all_of:
+            siblings = {k: v for k, v in node.items() if k != 'allOf'}
+            merged: dict[str, Any] = {}
+            props: dict[str, Any] = {}
+            required: list[Any] = []
+            for part in all_of:
+                if not isinstance(part, dict):
+                    continue
+                flat, seen, part_null = _flatten(part, root, seen)
+                nullable = nullable or part_null
+                props.update(flat.get('properties') or {})
+                required.extend(flat.get('required') or [])
+                merged.update({k: v for k, v in flat.items() if k not in {'properties', 'required'}})
+            if props:
+                merged['properties'] = props
+            if required:
+                merged['required'] = required
+            node = {**merged, **siblings}
+            continue
+        for key in ('oneOf', 'anyOf'):
+            variants = node.get(key)
+            if not isinstance(variants, list) or not variants:
+                continue
+            siblings = {k: v for k, v in node.items() if k != key}
+            kept: list[dict[str, Any]] = []
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                flat, seen, var_null = _flatten(variant, root, seen)
+                if _is_null_variant(flat):
+                    nullable = True
+                    continue
+                nullable = nullable or var_null
+                kept.append(flat)
+            if len(kept) == 1:
+                node = {**kept[0], **siblings}
+            elif kept and all(isinstance(v.get('enum'), list) for v in kept):
+                # drf-spectacular: oneOf [StatusEnum, BlankEnum, NullEnum].
+                values: list[Any] = []
+                for v in kept:
+                    values.extend(x for x in v['enum'] if x not in values)
+                node = {'enum': values, **siblings}
+            else:
+                return _free_form(siblings.get('description')), seen, nullable
+            break
+        else:
+            return node, seen, nullable
+    return _free_form(node.get('description')), seen, nullable
+
+
+def _client_prop_schema(
+    node: Any,
+    root: dict[str, Any] | None = None,
+    _seen: frozenset[str] | None = None,
+) -> dict[str, Any]:
     """JSON Schema fragment safe for strict MCP clients."""
     if not isinstance(node, dict):
         return {'type': 'string'}
+    root = root or {}
+    node, seen, nullable = _flatten(node, root, _seen or frozenset())
     out: dict[str, Any] = {}
     if node.get('description'):
         out['description'] = str(node['description'])
     typ = node.get('type')
     if isinstance(typ, list):
+        if 'null' in typ:
+            nullable = True
         non_null = [t for t in typ if t != 'null']
-        typ = non_null[0] if non_null else 'string'
-    if typ in {'string', 'integer', 'number', 'boolean'}:
-        out['type'] = typ
+        typ = non_null[0] if non_null else None
+    enum = node.get('enum') if isinstance(node.get('enum'), list) else None
+    if enum is not None:
+        if None in enum:
+            nullable = True
+        enum = [v for v in enum if v is not None]
+        typ = typ or _enum_type(enum)
+    if typ in _SCALAR_TYPES:
+        out['type'] = [typ, 'null'] if nullable else typ
         if typ == 'string' and node.get('format'):
             out['format'] = str(node['format'])
+        if enum:
+            out['enum'] = enum + [None] if nullable else enum
         return out
     if typ == 'array':
-        out['type'] = 'array'
+        out['type'] = ['array', 'null'] if nullable else 'array'
         items = node.get('items')
-        out['items'] = _client_prop_schema(items if isinstance(items, dict) else {'type': 'string'})
+        out['items'] = _client_prop_schema(items if isinstance(items, dict) else {'type': 'string'}, root, seen)
         return out
     if typ == 'object' or isinstance(node.get('properties'), dict):
-        out['type'] = 'object'
+        out['type'] = ['object', 'null'] if nullable else 'object'
         props = node.get('properties') if isinstance(node.get('properties'), dict) else {}
-        out['properties'] = {str(k): _client_prop_schema(v) for k, v in props.items()}
+        out['properties'] = {str(k): _client_prop_schema(v, root, seen) for k, v in props.items()}
         # Named props stay closed; empty object schemas (JSONField) stay open.
         out['additionalProperties'] = bool(node.get('additionalProperties', False)) if props else True
         req = node.get('required')
@@ -101,7 +217,7 @@ def _parameter_schemas(
             continue
         key = str(name)
         raw = param.get('schema') if isinstance(param.get('schema'), dict) else {'type': 'string'}
-        properties[key] = _client_prop_schema(_resolve_schema(raw if isinstance(raw, dict) else {}, root))
+        properties[key] = _client_prop_schema(raw if isinstance(raw, dict) else {}, root)
         if param.get('required'):
             required.append(key)
     return properties, required
@@ -119,7 +235,7 @@ def _body_schemas(operation: dict[str, Any], root: dict[str, Any]) -> tuple[dict
     props = resolved.get('properties') or {}
     if not isinstance(props, dict):
         return {}, []
-    properties = {str(key): _client_prop_schema(val) for key, val in props.items()}
+    properties = {str(key): _client_prop_schema(val, root) for key, val in props.items()}
     required_raw = resolved.get('required') or []
     required = [str(key) for key in required_raw if str(key) in properties]
     return properties, required
