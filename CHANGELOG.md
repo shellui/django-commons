@@ -23,6 +23,12 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.5.3] - 2026-11-11
+
+### 🐛 Bug Fixes
+
+- MCP `tools/call`: honor `mcp_gateway_delegated` on agent tokens so downstream services do not open a second human approval after the AI company gateway already approved and consumed the grant.
+
 ## [0.5.2] - 2026-11-11
 
 ### 🐛 Bug Fixes
