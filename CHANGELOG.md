@@ -23,6 +23,13 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.5.2] - 2026-11-11
+
+### 🐛 Bug Fixes
+
+- MCP `tools/list`: keep registry `_meta` (path, method, read_only, destructive) on the wire. Services publish flat agent schemas without transport arguments; the AI gateway needs `_meta` to route `tools/call`. Other private `_` keys are still stripped.
+- MCP argument validation: ignore DRF `format` query noise so legacy nested `tools/call` envelopes from older MCP clients do not fail with `Unexpected query fields: format`.
+
 ## [0.5.1] - 2026-11-09
 
 ### 🐛 Bug Fixes

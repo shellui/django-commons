@@ -298,6 +298,9 @@ class McpGatewayTests(SimpleTestCase):
 
 
 class GatewayHelperTests(SimpleTestCase):
-    def test_public_mcp_tools_strips_private_keys(self):
-        raw = [{'name': 'a', '_meta': {'x': 1}}]
-        self.assertEqual(public_mcp_tools(raw), [{'name': 'a'}])
+    def test_public_mcp_tools_keeps_meta_strips_other_private_keys(self):
+        raw = [{'name': 'a', '_meta': {'path': '/x', 'method': 'GET'}, '_private': 1}]
+        self.assertEqual(
+            public_mcp_tools(raw),
+            [{'name': 'a', '_meta': {'path': '/x', 'method': 'GET'}}],
+        )

@@ -42,3 +42,16 @@ class ValidateMcpToolArgumentsTests(SimpleTestCase):
                 {'path_params': {'company_id': '9'}, 'query': {'limit': '1', 'evil': '1'}},
                 meta,
             )
+
+    def test_ignores_drf_format_query_field(self):
+        meta = {
+            'path': '/api/v1/users',
+            'query_fields': ['page', 'page_size', 'q'],
+        }
+        arguments = {
+            'path_params': {},
+            'query': {'format': 'json', 'page': 1, 'page_size': 100},
+        }
+        validate_mcp_tool_arguments(arguments, meta)
+        self.assertNotIn('format', arguments['query'])
+        self.assertEqual(arguments['query']['page'], 1)

@@ -7,6 +7,8 @@ from typing import Any
 from urllib.parse import quote
 
 _PATH_PARAM_RE = re.compile(r'\{([^}]+)\}')
+# DRF browsable-API content negotiation; never an MCP tool argument.
+_IGNORED_QUERY_FIELDS = frozenset({'format'})
 
 
 class McpToolArgumentError(ValueError):
@@ -76,9 +78,13 @@ def validate_mcp_tool_arguments(arguments: dict[str, Any], meta: dict[str, Any])
     if path_params is None:
         path_params = {}
     materialize_openapi_path(str(meta.get('path') or ''), path_params)
+    query = arguments.get('query')
+    if isinstance(query, dict) and _IGNORED_QUERY_FIELDS & set(query):
+        query = {key: value for key, value in query.items() if key not in _IGNORED_QUERY_FIELDS}
+        arguments['query'] = query
     _validate_param_object(
         'query',
-        arguments.get('query'),
+        query,
         meta.get('query_fields'),
         required=meta.get('query_required') or None,
     )

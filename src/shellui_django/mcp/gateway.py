@@ -42,11 +42,20 @@ def service_allowed(agent_services: list[str] | None, service_id: str) -> bool:
 
 
 def public_mcp_tools(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Strip private ``_`` keys from tools/list rows, but keep registry ``_meta``.
+
+    Downstream services publish flat agent schemas without ``method``/``path``
+    arguments. Gateways need ``_meta.path`` / ``_meta.method`` to route calls.
+    """
     out: list[dict[str, Any]] = []
     for tool in raw:
         if not isinstance(tool, dict):
             continue
-        out.append({k: v for k, v in tool.items() if not str(k).startswith('_')})
+        row = {k: v for k, v in tool.items() if not str(k).startswith('_')}
+        meta = tool.get('_meta')
+        if isinstance(meta, dict):
+            row['_meta'] = meta
+        out.append(row)
     return out
 
 

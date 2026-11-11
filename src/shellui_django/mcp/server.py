@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 _BODYLESS_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS', 'TRACE'})
 
 
+def _tool_list_row(tool: dict[str, Any]) -> dict[str, Any]:
+    """Public tools/list row: drop private ``_`` keys except registry ``_meta``."""
+    row = {k: v for k, v in tool.items() if not str(k).startswith('_')}
+    meta = tool.get('_meta')
+    if isinstance(meta, dict):
+        row['_meta'] = meta
+    return row
+
+
 class McpServer:
     def __init__(
         self,
@@ -76,7 +85,9 @@ class McpServer:
             return JsonResponse(self._result(req_id, {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}}}))
         if method == 'tools/list':
             schema = self.schema_provider()
-            tools = [{k: v for k, v in t.items() if not k.startswith('_')} for t in tools_from_schema(schema)]
+            # Keep ``_meta`` (path/method/read_only): flat agent schemas omit transport
+            # fields, and the AI gateway needs registry metadata to route tools/call.
+            tools = [_tool_list_row(t) for t in tools_from_schema(schema)]
             return JsonResponse(self._result(req_id, {'tools': tools}))
         if method == 'tools/call':
             return self._tools_call(request, req_id, params, agent_claims)
