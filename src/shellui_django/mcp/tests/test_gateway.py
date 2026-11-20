@@ -11,9 +11,12 @@ from django.core.cache import cache
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from shellui_django.mcp.gateway import AggregatingMcpServer, McpGatewayConfig, public_mcp_tools
+from shellui_django.mcp.tests.rs256_helpers import generate_test_rsa_jwks, sign_test_agent_access_token
 
 IDENTITY_MCP = 'https://identity.test/mcp'
 STORAGE_MCP = 'https://storage.test/mcp'
+ISSUER = 'https://identity.example.com'
+AUDIENCE = 'https://gateway.example.com/mcp'
 
 LOCAL_SCHEMA = {
     'paths': {
@@ -73,6 +76,11 @@ def _resolve(claims: dict) -> StubAgent | None:
     },
 )
 class McpGatewayTests(SimpleTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.jwks, cls.private_pem, cls.kid = generate_test_rsa_jwks()
+
     def setUp(self):
         cache.clear()
         self.factory = RequestFactory()
@@ -114,18 +122,41 @@ class McpGatewayTests(SimpleTestCase):
             local_service_id='identity',
             instructions_title='Shellui Identity MCP gateway.',
         )
-        self.server = AggregatingMcpServer(
-            gateway=self.gateway_config,
-            schema_provider=lambda: LOCAL_SCHEMA,
+        self.server = self._make_server(LOCAL_SCHEMA)
+
+    def _make_server(self, schema, *, gateway=None, service_name='identity'):
+        return AggregatingMcpServer(
+            gateway=gateway or self.gateway_config,
+            schema_provider=lambda schema=schema: schema,
             urlconf='shellui_django.mcp.tests.mcp_routing_urlconf',
-            service_name='identity',
+            service_name=service_name,
+            identity_revocation_check=lambda _agent_id, _company_id: False,
+            identity_issuer=ISSUER,
+            identity_jwks=self.jwks,
+            mcp_audience=AUDIENCE,
         )
 
-    def _post(self, body: str, *, claims: dict | None = None):
-        request = self.factory.post('/mcp', data=body, content_type='application/json')
+    def _request(self, body: str, *, claims: dict | None = None):
+        claims = self.claims_a if claims is None else claims
+        token = sign_test_agent_access_token(
+            claims,
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=ISSUER,
+            audience=AUDIENCE,
+        )
+        request = self.factory.post(
+            '/mcp',
+            data=body,
+            content_type='application/json',
+            HTTP_AUTHORIZATION=f'Bearer {token}',
+        )
         request.user = None
-        request.auth = claims
-        return self.server.handle(request, agent_claims=claims)
+        request.auth = {'agent_id': 'not-the-token', 'company_id': 1}
+        return request
+
+    def _post(self, body: str, *, claims: dict | None = None):
+        return self.server.handle(self._request(body, claims=claims), agent_claims=None)
 
     @patch('shellui_django.mcp.gateway.requests.post')
     def test_tools_list_includes_remote_when_downstream_ok(self, post):
@@ -172,18 +203,12 @@ class McpGatewayTests(SimpleTestCase):
             return resp
 
         post.side_effect = side_effect
-        server = AggregatingMcpServer(
-            gateway=self.gateway_config,
-            schema_provider=lambda: EMPTY_SCHEMA,
-            urlconf='shellui_django.mcp.tests.mcp_routing_urlconf',
-            service_name='identity',
-        )
+        server = self._make_server(EMPTY_SCHEMA)
         with patch(
             'shellui_django.mcp.gateway.tools_from_schema',
             return_value=[{'name': 'shared_tool', 'description': 'local'}],
         ):
-            request = self.factory.post('/mcp', data=_rpc('tools/list'), content_type='application/json')
-            response = server.handle(request, agent_claims=self.claims_a)
+            response = server.handle(self._request(_rpc('tools/list')), agent_claims=self.claims_a)
         names = [t['name'] for t in json.loads(response.content)['result']['tools']]
         self.assertEqual(len(names), len(set(names)))
         self.assertIn('storage__shared_tool', names)
@@ -197,15 +222,10 @@ class McpGatewayTests(SimpleTestCase):
             'mcp_access': 'full',
         }
         self.agent_a.services_allowed = ['identity']
-        server = AggregatingMcpServer(
-            gateway=self.gateway_config,
-            schema_provider=lambda: EMPTY_SCHEMA,
-            urlconf='shellui_django.mcp.tests.mcp_routing_urlconf',
-            service_name='identity',
-        )
+        server = self._make_server(EMPTY_SCHEMA)
         with patch('shellui_django.mcp.gateway.tools_from_schema', return_value=[]):
             list_resp = server.handle(
-                self.factory.post('/mcp', data=_rpc('tools/list'), content_type='application/json'),
+                self._request(_rpc('tools/list'), claims=claims),
                 agent_claims=claims,
             )
         self.assertEqual(list_resp.status_code, 200)
@@ -216,11 +236,7 @@ class McpGatewayTests(SimpleTestCase):
             60,
         )
         call_resp = server.handle(
-            self.factory.post(
-                '/mcp',
-                data=_rpc('tools/call', name='storage_v1_x', arguments={}),
-                content_type='application/json',
-            ),
+            self._request(_rpc('tools/call', name='storage_v1_x', arguments={}), claims=claims),
             agent_claims=claims,
         )
         self.assertEqual(call_resp.status_code, 200)
@@ -247,12 +263,11 @@ class McpGatewayTests(SimpleTestCase):
             60,
         )
         response = self.server.handle(
-            self.factory.post(
-                '/mcp',
-                data=_rpc('tools/call', name='storage_v1_run', arguments={'body': {'company_id': 10}}),
-                content_type='application/json',
+            self._request(
+                _rpc('tools/call', name='storage_v1_run', arguments={'body': {'company_id': 20}}),
+                claims=self.claims_b,
             ),
-            agent_claims=self.claims_b,
+            agent_claims={'agent_id': self.agent_a.id, 'company_id': 10, 'scope': 'identity storage'},
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content)['result']['content'][0]['text'], 'ok')
@@ -267,6 +282,24 @@ class McpGatewayTests(SimpleTestCase):
         self.assertEqual(payload['agent_id'], self.agent_b.id)
         self.assertEqual(payload['aud'], STORAGE_MCP)
 
+    @patch('shellui_django.mcp.gateway.requests.post')
+    def test_forward_rejects_other_company_in_arguments(self, post):
+        cache.set(
+            'mcp_gateway:route:storage_v1_run',
+            {'service_id': 'storage', 'downstream_name': 'storage_v1_run'},
+            60,
+        )
+        response = self.server.handle(
+            self._request(
+                _rpc('tools/call', name='storage_v1_run', arguments={'body': {'company_id': 10}}),
+                claims=self.claims_b,
+            ),
+            agent_claims=self.claims_a,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('company_id', json.loads(response.content)['error']['message'])
+        post.assert_not_called()
+
     @patch('shellui_django.mcp.gateway.requests.post', side_effect=ConnectionError('down'))
     def test_no_token_in_logs(self, _post):
         config = McpGatewayConfig(
@@ -275,15 +308,10 @@ class McpGatewayTests(SimpleTestCase):
             mint_downstream_token=lambda _agent, _resource: 'mcp-test-token-leak-check',
             local_service_id='identity',
         )
-        server = AggregatingMcpServer(
-            gateway=config,
-            schema_provider=lambda: LOCAL_SCHEMA,
-            urlconf='shellui_django.mcp.tests.mcp_routing_urlconf',
-            service_name='identity',
-        )
+        server = self._make_server(LOCAL_SCHEMA, gateway=config)
         with self.assertLogs('shellui_django.mcp.gateway', level='WARNING') as logs:
             server.handle(
-                self.factory.post('/mcp', data=_rpc('tools/list'), content_type='application/json'),
+                self._request(_rpc('tools/list')),
                 agent_claims=self.claims_a,
             )
         joined = '\n'.join(logs.output)

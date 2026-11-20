@@ -9,10 +9,10 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) lets AI agents ca
 ## Architecture
 
 ```text
-Agent JWT  -->  Your /mcp view (verify token, build agent_claims)
+Agent JWT  -->  Your /mcp view
                       |
                       v
-                 McpServer.handle  (JSON-RPC: initialize, tools/list, tools/call)
+                 McpServer.handle  (verifies the bearer token, then JSON-RPC)
                       |
         tools/list <-- OpenAPI schema (operations tagged mcp-tools)
                       |
@@ -35,9 +35,13 @@ Construct `McpServer` with:
 - `schema_provider`: callable that returns the OpenAPI dict.
 - `urlconf`: Django URL module used to resolve the inner request.
 - `service_name`: short id (for example `saas`) that must appear in the agent token `scope` claim.
-- Optional hooks: `identity_revocation_check`, `on_call`, `approval_handler`, `approval_state`, `approval_consume`.
+- `identity_issuer`: Identity issuer (`iss`) expected on agent access tokens. Compared without a trailing slash.
+- `mcp_audience`: this service's MCP resource URL (`https://origin/mcp`). Must match token `aud`.
+- `identity_jwks` or `identity_jwks_url`: verification keys for that token. Inline JWKS skips the network. A URL is fetched with the rules below.
+- `identity_revocation_check`: required callable `(agent_id, company_id) -> bool`. Return true when the agent is revoked.
+- Optional hooks: `on_call`, `approval_handler`, `approval_state`, `approval_consume`.
 
-Your HTTP view should verify the agent JWT, then call `server.handle(request, agent_claims=claims)`.
+`handle` verifies the bearer token itself. The `agent_claims` argument is still accepted and is not used for authorization. Without issuer, audience, JWKS, or a valid bearer token, `handle` returns 401.
 
 Supported JSON-RPC methods:
 
@@ -78,7 +82,7 @@ Behavior:
 
 - **`tools/list`**: Merges local tools with each allowed downstream catalog. Allowed means the service id is in both JWT `scope` and the agent's `services_allowed` list. Downstream list failures omit that service only.
 - **Tool names**: Downstream tools keep their name when unique. Collisions become `{service_id}__{name}` (then `{service_id}__{name}__gateway` if still colliding).
-- **`tools/call`**: Routes using a short-lived cache keyed by exported tool name. Forwards JSON-RPC to the configured URL with a minted downstream token. Does not re-run approvals or execute writes on behalf of downstream services.
+- **`tools/call`**: Routes using a short-lived cache keyed by exported tool name. Rejects the call when a tenant field in the arguments does not match the verified `company_id`. Otherwise forwards JSON-RPC to the configured URL with a minted downstream token. Does not re-run approvals or execute writes on behalf of downstream services.
 - **`initialize`**: Returns `instructions` listing connected services for the agent.
 - **Logging**: Logs service id, tool name, HTTP status, and exception types only. Never logs bearer tokens or tool arguments.
 
@@ -90,11 +94,11 @@ OpenAPI paths like `/api/v1/companies/{company_id}/items/` require a `path_param
 
 Agents cannot retarget a tool: `path` and `method` in arguments must match the tool definition.
 
-### Inner request auth passthrough
+### Inner request auth
 
-On `tools/call`, the server builds a DRF request with `APIRequestFactory`. It copies `HTTP_AUTHORIZATION` from the outer MCP request and calls `force_authenticate` with the outer request's `user` and `auth`. If `auth` is missing, agent claims are used as `auth`. Bodyless methods (`GET`, `HEAD`, `OPTIONS`, `TRACE`) do not attach a JSON body.
+On `tools/call`, the server builds a DRF request with `APIRequestFactory`. It copies `HTTP_AUTHORIZATION` from the outer MCP request and calls `force_authenticate` with the verified token claims as `auth`. `request.user` is an authenticated principal for that agent id. The outer request's `user` and `auth` are not copied. Bodyless methods (`GET`, `HEAD`, `OPTIONS`, `TRACE`) do not attach a JSON body.
 
-Your views should read the agent from `request.auth` like any other DRF endpoint.
+Your views should read the agent from `request.auth`.
 
 ## Settings reference
 
@@ -119,7 +123,7 @@ The MCP code reads these Django settings. Do not rely on settings not listed her
 
 Service-issued internal assertions and Identity verification never use SimpleJWT `SIGNING_KEY` or `ALGORITHM`.
 
-Agent access tokens are verified in your MCP view (not inside `McpServer`). Use RS256 and Identity JWKS via `decode_identity_rs256_jwt` and audience checks via `access_token_audience_matches` (see below).
+`McpServer.handle` verifies agent access tokens (RS256, issuer, audience, JWKS) before it runs a tool. See Token verification below.
 
 ### Constants (not settings)
 
@@ -128,6 +132,7 @@ Agent access tokens are verified in your MCP view (not inside `McpServer`). Use 
 | `REVOCATION_CACHE_SECONDS` | `30` | Default TTL in signed revocation list assertions. |
 | `REVOCATION_LIST_MAX_ASSERTION_LIFETIME_SECONDS` | `600` | Hard cap on `exp - iat` and on positive `cache_seconds` in signed revocation list responses (10 minutes). |
 | JWKS in-memory cache | `300` s | TTL for fetched Identity JWKS documents in `identity_jwks`. |
+| `JWKS_MAX_RESPONSE_BYTES` | `262144` | Maximum Identity JWKS response body (256 KiB). |
 
 ## Tagging views and OpenAPI operations
 
@@ -170,16 +175,17 @@ Keys ending in `_hint` are always redacted. Names matching `(password|secret|tok
 
 ## Agent token claims
 
-Your MCP view must pass verified claims into `handle`. Claims read by this library:
+`handle` reads these claims from the verified bearer token:
 
 | Claim | Default | Role |
 |-------|---------|------|
 | `agent_id` | required | Identity of the agent. |
-| `company_id` | optional | Tenant id passed to revocation checks and approval payloads. |
+| `company_id` | optional | Tenant id from the verified token. Tool arguments that include a company id must match it. Passed to revocation checks and approval payloads. |
 | `scope` | required | Space-separated service ids; must include `service_name`. |
 | `mcp_access` | `read_only` | `read_only` or `full` (or legacy `ask`). |
 | `mcp_read` | `safe` | `safe` or `sensitive` (response masking). |
-| `mcp_destructive` | false | Reserved for hosts; does **not** skip destructive approval in `decide_write`. Every destructive operation still goes through the approval hooks. |
+| `mcp_destructive` | false | Reserved for hosts; does **not** skip destructive approval in `decide_write`. Every destructive tool call still goes through the approval hooks. |
+| `mcp_gateway_delegated` | omitted | Object `{"action": "<tool name>", "exp": <unix seconds>}`. Skips a second approval only when `action` is the tool being called and `exp` is still in the future. `true` and any other shape do not skip approval. |
 
 Numeric claims (for example `company_id`) use normal JSON numbers. `0` is a real value: treat a present `0` and a missing claim as different; do not collapse them in verification logic.
 
@@ -201,6 +207,8 @@ When approval is needed, `McpServer` builds an `approval_payload` (agent, compan
 4. If not granted and `approval_handler` is set, it may create a pending approval and return `meta.approval_id`.
 5. Otherwise the call fails with the gate reason.
 
+A downstream service skips that second approval only when the agent token's `mcp_gateway_delegated` object names this tool in `action` and `exp` is a Unix timestamp still in the future. There is no extra clock leeway on that `exp`. A boolean `mcp_gateway_delegated` does not skip approval.
+
 Wire these callbacks to your Identity approval-state and consume HTTP endpoints. Use `build_mcp_approval_assertion` when the service calls Identity to create an approval (audience `shellui-mcp-approval`, scope `mcp.approval.create`).
 
 **Regional / delegated authority (optional, last parameters in Python):** `grant_version` (`int | None`), `global_company_id` (`str | None`), `company_binding_version` (`int | None`). Detect presence with `is not None` only. Do not use truthiness on `company_binding_version` or `grant_version` (`0` is valid). **Personal (legacy):** omit both `global_company_id` and `company_binding_version`; that means a tenant-scoped row without global delegation rollover. You may pass `grant_version` as a non-negative int (including `0`) or omit it when the JWT should have no `grant_version` claim (no default `0`). **Delegated:** pass `global_company_id`, `company_binding_version` (explicit `0` allowed), and `grant_version` (all required). Strict Identity services should pass the full delegated triple for global agents. The library keeps `None` optional on the signature so 0.4.0 call sites still import. `bool` is rejected for numeric fields. There is no `**extra_claims` escape hatch. Reserved claim names cannot be overridden by an arbitrary dict.
@@ -212,7 +220,7 @@ Other internal assertion helpers (RS256 via `JWT_SIGNING_KEY` or explicit `priva
 | `build_mcp_call_log_assertion` | `shellui-mcp-call-log` | `mcp.call_log.create` |
 | `build_mcp_revocation_assertion` | `shellui-mcp-revocation` | `mcp.revocation.read` |
 
-Verify incoming assertions with `verify_mcp_internal_assertion` (alias of `verify_rs256_mcp_assertion`). Pass the caller JWKS document or public PEM, the expected caller issuer (must match `iss`), audience, scope, and Identity public URL as `expected_target`. RS256 only; optional `register_jti` for replay protection.
+Verify incoming assertions with `verify_mcp_internal_assertion` (alias of `verify_rs256_mcp_assertion`). Pass the caller JWKS document or public PEM, the expected caller issuer (must match `iss`), audience, scope, and Identity public URL as `expected_target`. When `expected_target` is set, the assertion `target` must equal it after stripping a trailing slash. An empty or missing `target` does not match. RS256 only; optional `register_jti` for replay protection.
 
 Service-to-Identity assertions are still signed with the **caller's** RS256 material (`JWT_SIGNING_KEY` or explicit PEM/`kid`); Identity verifies with the caller's JWKS. Use the same pattern for regional authority fields: sign only through `build_mcp_*` helpers so proofs stay aligned with verification.
 
@@ -234,19 +242,21 @@ Raises `DownstreamTokenRequestError` on failure (check `.status`, default 401).
 
 ## Token verification (agent access tokens)
 
-This library does not verify agent bearer tokens inside `McpServer`. In your `/mcp` view:
+`McpServer.handle` reads `Authorization: Bearer` and verifies it before any tool runs:
 
-1. Require RS256. Use `decode_identity_rs256_jwt` with Identity issuer and JWKS (`{issuer}/.well-known/jwks.json`, or pass `jwks_url` / inline `jwks`). The decoder always requires `exp`, `iat`, `sub`, `scope`, and `jti`. Pass extra claim names only in `require_claims`; they are unioned with that core set. Decoded `iat` and `exp` are normalized to non-negative integers (strict types after verify; digit strings from legacy issuers are accepted).
-2. Check audience per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html): the JWT `aud` must match this service's MCP resource URL (`https://your-origin/mcp`). Use `mcp_resource_from_origin` to build the expected value and `access_token_audience_matches` to compare.
-3. Parse required claims (`agent_id`, `scope`, etc.) and reject missing or invalid tokens before calling `handle`.
+1. RS256 via `decode_identity_rs256_jwt`, using `identity_issuer` and `identity_jwks` or `identity_jwks_url`. The decoder always requires `exp`, `iat`, `sub`, `scope`, and `jti`, and `handle` also requires `agent_id`. Pass extra claim names only in `require_claims` when calling the decoder yourself; they are unioned with that core set. Decoded `iat` and `exp` are normalized to non-negative integers (strict types after verify; digit strings from legacy issuers are accepted).
+2. Audience per [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707.html): `mcp_audience` must match token `aud` and `access_token_audience_matches`. Use `mcp_resource_from_origin` to build the expected value.
+3. A missing or invalid token returns 401. Callers may still pass `agent_claims`; those values are not used for authorization.
+
+Fetched JWKS documents use the configured URL only. Redirects are not followed. The scheme must be `https`, except `http` while Django `DEBUG` is true. Other schemes are rejected. The response body is capped at `JWKS_MAX_RESPONSE_BYTES` (256 KiB). `timeout` must be positive and defaults to 10 seconds.
 
 Resource URLs must be absolute `https` (or `http` on loopback, private, or CGNAT/`100.64.0.0/10` IP literals for local/LAN/Tailscale), path exactly `/mcp`, no query or fragment. Public hostnames over plain `http` are rejected.
 
 ## Tenant isolation
 
-`company_id` must come from the verified JWT only. The MCP layer forwards `path_params`, `query`, and `body` to your views as the agent supplied them. It does not compare path `company_id` to the token.
+`company_id` comes from the verified bearer token. On `tools/call`, tenant fields in the arguments must match that id. Keys are `company_id`, `companyId`, and `company-id`, at any depth in `path_params`, `query`, and `body`. A mismatch is a JSON-RPC invalid-params error and the inner view is not called. The aggregating gateway applies the same check before it forwards a call. A token with no `company_id` does not match a tenant field. `0` is a real company id.
 
-**Service rule:** enforce that URL and payload tenant fields match `request.auth['company_id']`. Never trust a company id from tool arguments alone.
+Views should still read the company from `request.auth` for any field this check does not see.
 
 ## Revocation
 
@@ -272,7 +282,7 @@ Consumers should use `parse_trusted_revocation_poll_response` or `verify_mcp_rev
 - Cross-checks `revoked_agent_ids`, `cache_seconds`, and `agents` between the JSON body and the JWT, and optional version fields when Identity includes them in the assertion.
 - On any error, treat data as untrusted (**fail closed**).
 
-Pass a callable `identity_revocation_check(agent_id, company_id)` into `McpServer`. Return `True` when the agent is revoked. `handle` responds with `403` and `agent_revoked`.
+Pass `identity_revocation_check(agent_id, company_id)` into `McpServer`. Return `True` when the agent is revoked (`403`, `agent_revoked`). The hook is required: if it is missing or raises, `handle` responds with `403` and `revocation_unavailable`. An invalid `company_id` on the token is rejected before the hook runs.
 
 Default cache hint in assertions: 30 seconds (`REVOCATION_CACHE_SECONDS`).
 
@@ -292,12 +302,12 @@ When `AUTH_RATE_LIMIT_ENABLED` is true, each `agent_id` is limited using Django'
 
 ## Security checklist
 
-- [ ] Agent JWT verified with RS256 and Identity JWKS before `McpServer.handle`.
+- [ ] `McpServer` constructed with `identity_issuer`, `mcp_audience`, and JWKS (`identity_jwks` or `identity_jwks_url`).
 - [ ] `aud` matches this service's `{origin}/mcp` resource URL only.
 - [ ] `scope` includes only services this deployment should expose.
 - [ ] Revocation poll responses verified with `parse_trusted_revocation_poll_response`; fail closed if verification fails.
-- [ ] `identity_revocation_check` wired and tested.
-- [ ] Tenant enforced in views: `company_id` from JWT, not from tool args alone.
+- [ ] `identity_revocation_check` wired and tested (requests are rejected when it is missing).
+- [ ] Views still read `company_id` from `request.auth` for fields outside tool arguments.
 - [ ] Only intentional endpoints tagged `mcp-tools`.
 - [ ] `x-mcp-secret` / `x-mcp-sensitive` set on PII and credential fields.
 - [ ] Read-only POST tools listed in `validate_read_only_post_tools` allowlist.

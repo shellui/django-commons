@@ -23,6 +23,23 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [Unreleased]
+
+### 🛠 Improvements
+
+- MCP `tools/call` checks tenant fields (`company_id`, `companyId`, `company-id`) in tool arguments, including nested objects, against the verified token `company_id`. The aggregating gateway applies the same check before it forwards a call. `0` is a real company id.
+- `McpServer.handle` verifies the bearer token (RS256, `identity_issuer`, `mcp_audience`, JWKS) and authenticates the inner view with those claims.
+- `identity_revocation_check` runs on every request. A missing hook, or a hook that raises, is rejected with HTTP 403 `revocation_unavailable`.
+- Identity JWKS fetch uses the configured URL only: redirects are not followed, `https` is required unless Django `DEBUG` is true, other schemes are rejected, the body is capped at 256 KiB, and the timeout must be positive (default 10 seconds).
+- Internal assertion verification requires `target` to equal `expected_target`. An empty or missing `target` does not match.
+- `mcp_gateway_delegated` skips a second approval only for the tool named in `action` while `exp` is still in the future.
+
+### 🚨 Changed
+
+- `McpServer` needs `identity_issuer`, `mcp_audience`, and `identity_jwks` or `identity_jwks_url`, plus `identity_revocation_check`. `handle` does not authorize from the `agent_claims` argument. Inner `request.user` is the verified agent principal, and `request.auth` is the verified claims.
+- `mcp_gateway_delegated` must be an object `{"action": "<tool name>", "exp": <unix seconds>}`. A boolean value does not skip approval.
+- JWKS clients that used plain `http` while `DEBUG` is false, or that followed a redirect, now get an error from `get_jwks_document`.
+
 ## [0.5.3] - 2026-11-11
 
 ### 🐛 Bug Fixes

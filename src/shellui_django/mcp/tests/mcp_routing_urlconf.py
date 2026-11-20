@@ -15,8 +15,17 @@ class CompanyItemView(APIView):
             underlying = getattr(request, '_request', request)
             auth = getattr(underlying, 'auth', None) or getattr(underlying, '_force_auth_token', None)
         agent_id = auth.get('agent_id') if isinstance(auth, dict) else None
-        user_ok = bool(getattr(request.user, 'is_authenticated', False))
-        return Response({'company_id': company_id, 'agent_id': agent_id, 'user_ok': user_ok})
+        user = getattr(request, 'user', None)
+        user_ok = bool(getattr(user, 'is_authenticated', False))
+        return Response(
+            {
+                'company_id': company_id,
+                'agent_id': agent_id,
+                'user_ok': user_ok,
+                'user_agent_id': getattr(user, 'agent_id', None),
+                'user_marker': getattr(user, 'marker', None),
+            }
+        )
 
 
 class RenderPreviewView(APIView):

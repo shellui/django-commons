@@ -1,6 +1,20 @@
 from django.test import SimpleTestCase
 
-from shellui_django.mcp.routing import McpToolArgumentError, materialize_openapi_path, validate_mcp_tool_arguments
+from shellui_django.mcp.routing import (
+    McpToolArgumentError,
+    materialize_openapi_path,
+    tool_arguments_match_company,
+    validate_mcp_tool_arguments,
+)
+
+
+class ToolArgumentsCompanyTests(SimpleTestCase):
+    def test_nested_company_must_match_including_zero(self):
+        arguments = {'body': {'owner': {'company_id': 0}, 'rows': [{'companyId': '0'}]}}
+        self.assertTrue(tool_arguments_match_company(arguments, 0))
+        self.assertFalse(tool_arguments_match_company(arguments, 42))
+        self.assertFalse(tool_arguments_match_company({'query': {'company-id': 7}}, None))
+        self.assertFalse(tool_arguments_match_company(['company_id'], 1))
 
 
 class MaterializeOpenApiPathTests(SimpleTestCase):
