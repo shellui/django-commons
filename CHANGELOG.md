@@ -23,7 +23,9 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
-## [Unreleased]
+## [0.6.0] - 2026-11-21
+
+Breaking: services must pass the new `McpServer` settings listed under Changed before upgrading.
 
 ### 🛠 Improvements
 
@@ -39,6 +41,10 @@ See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog
 - `McpServer` needs `identity_issuer`, `mcp_audience`, and `identity_jwks` or `identity_jwks_url`, plus `identity_revocation_check`. `handle` does not authorize from the `agent_claims` argument. Inner `request.user` is the verified agent principal, and `request.auth` is the verified claims.
 - `mcp_gateway_delegated` must be an object `{"action": "<tool name>", "exp": <unix seconds>}`. A boolean value does not skip approval.
 - JWKS clients that used plain `http` while `DEBUG` is false, or that followed a redirect, now get an error from `get_jwks_document`.
+
+### 🏗 Chore
+
+- PyPI publishing checks that the release tag matches the package version before upload.
 
 ## [0.5.3] - 2026-11-11
 
