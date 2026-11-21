@@ -13,7 +13,7 @@ from django.core.cache import cache as django_cache
 from django.http import HttpRequest, JsonResponse
 
 from shellui_django.mcp.openapi_tools import tools_from_schema
-from shellui_django.mcp.rate_limit import check_agent_rate_limit
+from shellui_django.mcp.routing import tool_arguments_match_company
 from shellui_django.mcp.server import McpServer
 
 logger = logging.getLogger(__name__)
@@ -187,25 +187,12 @@ class AggregatingMcpServer(McpServer):
         self._cache().set(cache_key, public, self._gateway.tools_cache_ttl_seconds)
         return public
 
-    def handle(self, request: HttpRequest, *, agent_claims: dict[str, Any] | None) -> JsonResponse:
-        if request.method != 'POST':
-            return JsonResponse({'error': 'method_not_allowed'}, status=405)
-        if agent_claims is None:
-            return JsonResponse({'error': 'unauthorized'}, status=401)
-        agent_id = str(agent_claims.get('agent_id') or '')
-        if not agent_id:
-            return JsonResponse({'error': 'unauthorized'}, status=401)
-        if check_agent_rate_limit(agent_id):
-            return JsonResponse({'error': 'rate_limited'}, status=429)
-        company_id = agent_claims.get('company_id')
-        try:
-            company_id_int = int(company_id) if company_id is not None else None
-        except (TypeError, ValueError):
-            company_id_int = None
-        if self.identity_revocation_check and self.identity_revocation_check(agent_id, company_id_int):
-            return JsonResponse({'error': 'agent_revoked'}, status=403)
-        if not self._service_allowed(agent_claims, self.service_name):
-            return JsonResponse({'error': 'forbidden'}, status=403)
+    def handle(self, request: HttpRequest, *, agent_claims: dict[str, Any] | None = None) -> JsonResponse:
+        del agent_claims
+        prepared = self._prepare(request)
+        if isinstance(prepared, JsonResponse):
+            return prepared
+        agent_claims = prepared
         try:
             payload = json.loads(request.body.decode('utf-8') or '{}')
         except json.JSONDecodeError:
@@ -237,7 +224,7 @@ class AggregatingMcpServer(McpServer):
             forwarded = self._maybe_forward_tool_call(request, req_id, params, agent_claims)
             if forwarded is not None:
                 return forwarded
-        return super().handle(request, agent_claims=agent_claims)
+        return self._handle_prepared(request, agent_claims)
 
     def _aggregated_tools_list(self, req_id: Any, agent_claims: dict[str, Any]) -> JsonResponse:
         agent = self._gateway.resolve_agent(agent_claims)
@@ -281,6 +268,10 @@ class AggregatingMcpServer(McpServer):
         tool_name = str(params.get('name') or '')
         if not tool_name:
             return None
+        company_raw = agent_claims.get('company_id')
+        company_id = company_raw if isinstance(company_raw, int) and not isinstance(company_raw, bool) else None
+        if not tool_arguments_match_company(params.get('arguments'), company_id):
+            return JsonResponse(self._error(req_id, -32602, 'company_id does not match the authenticated company'))
         route = self._lookup_route(tool_name)
         local_id = self._gateway.local_service_id
         if route is None:

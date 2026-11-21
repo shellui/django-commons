@@ -84,3 +84,30 @@ def encode_test_rs256_jwt(claims: dict, *, private_pem: str, kid: str) -> str:
     """Encode arbitrary claims for negative tests (do not use in production)."""
     token = jwt.encode(claims, private_pem, algorithm='RS256', headers={'kid': kid})
     return token.decode('utf-8') if isinstance(token, bytes) else token
+
+
+def sign_test_agent_access_token(
+    claims: dict,
+    *,
+    private_pem: str,
+    kid: str,
+    issuer: str,
+    audience: str,
+    ttl: int = 300,
+) -> str:
+    """RS256 agent access token for MCP handler tests."""
+    now = int(time.time())
+    payload = {
+        'iss': issuer,
+        'aud': audience,
+        'sub': str(claims.get('agent_id') or 'agent'),
+        'scope': claims.get('scope') or '',
+        'agent_id': claims.get('agent_id'),
+        'iat': now,
+        'exp': now + ttl,
+        'jti': uuid.uuid4().hex,
+    }
+    for key in ('company_id', 'mcp_access', 'mcp_read', 'mcp_destructive', 'mcp_gateway_delegated'):
+        if key in claims:
+            payload[key] = claims[key]
+    return encode_test_rs256_jwt(payload, private_pem=private_pem, kid=kid)

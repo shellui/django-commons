@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import Any
 from urllib.parse import quote
 
@@ -71,6 +72,55 @@ def _validate_param_object(
         missing = sorted(set(required) - set(value.keys()))
         if missing:
             raise McpToolArgumentError(f'Missing required {label} fields: {", ".join(missing)}')
+
+
+def _is_tenant_key(key: str) -> bool:
+    normalized = str(key).replace('-', '_').lower()
+    return normalized in {'company_id', 'companyid'}
+
+
+def _iter_tenant_values(node: Any) -> Iterator[Any]:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if _is_tenant_key(str(key)):
+                yield value
+            else:
+                yield from _iter_tenant_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_tenant_values(item)
+
+
+def _company_value_matches(value: Any, company_id: int) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == company_id
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.isdigit():
+            return False
+        return int(text) == company_id
+    return False
+
+
+def tool_arguments_match_company(arguments: Any, company_id: int | None) -> bool:
+    """True when every tenant id in tool arguments matches ``company_id``.
+
+    Tenant keys are ``company_id``, ``companyId``, and ``company-id``, at any
+    depth in the arguments object. A missing authenticated company does not
+    match a tenant field. ``0`` is a real company id.
+    """
+    if arguments is None:
+        return True
+    if not isinstance(arguments, dict):
+        return False
+    for value in _iter_tenant_values(arguments):
+        if company_id is None or isinstance(company_id, bool) or not isinstance(company_id, int):
+            return False
+        if not _company_value_matches(value, company_id):
+            return False
+    return True
 
 
 def validate_mcp_tool_arguments(arguments: dict[str, Any], meta: dict[str, Any]) -> None:
