@@ -515,8 +515,9 @@ def verify_rs256_mcp_assertion(
     elif str(aud or '') != expected_audience:
         raise InternalAssertionError('Assertion audience mismatch.')
     if expected_target:
+        expected = str(expected_target).rstrip('/')
         target = str(payload.get('target') or '').rstrip('/')
-        if target and target != expected_target.rstrip('/'):
+        if not target or target != expected:
             raise InternalAssertionError('Assertion target mismatch.')
     _assert_lifetime_within_limit(payload, max_lifetime_seconds=max_lifetime_seconds)
     jti = str(payload.get('jti') or '').strip()

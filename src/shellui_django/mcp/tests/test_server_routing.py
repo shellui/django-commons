@@ -4,6 +4,10 @@ import unittest
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from shellui_django.mcp.server import McpServer
+from shellui_django.mcp.tests.rs256_helpers import generate_test_rsa_jwks, sign_test_agent_access_token
+
+ISSUER = 'https://identity.example.com'
+AUDIENCE = 'https://saas.example.com/mcp'
 
 SCHEMA = {
     'paths': {
@@ -26,10 +30,16 @@ SCHEMA = {
 
 class _AuthUser:
     is_authenticated = True
+    marker = 'outer-user'
 
 
 @override_settings(ROOT_URLCONF='shellui_django.mcp.tests.mcp_routing_urlconf')
 class McpServerRoutingTests(SimpleTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.jwks, cls.private_pem, cls.kid = generate_test_rsa_jwks()
+
     def setUp(self):
         self.factory = RequestFactory()
         self.seen_revocation: list[tuple[str, int | None]] = []
@@ -43,6 +53,9 @@ class McpServerRoutingTests(SimpleTestCase):
             urlconf='shellui_django.mcp.tests.mcp_routing_urlconf',
             service_name='saas',
             identity_revocation_check=_revocation_check,
+            identity_issuer=ISSUER,
+            identity_jwks=self.jwks,
+            mcp_audience=AUDIENCE,
         )
         self.claims = {
             'agent_id': '00000000-0000-0000-0000-000000000099',
@@ -51,6 +64,15 @@ class McpServerRoutingTests(SimpleTestCase):
             'mcp_access': 'full',
             'mcp_read': 'safe',
         }
+
+    def _token(self, claims):
+        return sign_test_agent_access_token(
+            claims,
+            private_pem=self.private_pem,
+            kid=self.kid,
+            issuer=ISSUER,
+            audience=AUDIENCE,
+        )
 
     def _call_tool(self, arguments, *, claims=None):
         claims = claims or self.claims
@@ -65,11 +87,11 @@ class McpServerRoutingTests(SimpleTestCase):
                 }
             ),
             content_type='application/json',
-            HTTP_AUTHORIZATION='Bearer test-token',
+            HTTP_AUTHORIZATION=f'Bearer {self._token(claims)}',
         )
         request.user = _AuthUser()
-        request.auth = claims
-        return self.server.handle(request, agent_claims=claims)
+        request.auth = {'agent_id': 'other-agent', 'company_id': 7}
+        return self.server.handle(request, agent_claims={'agent_id': 'other-agent', 'company_id': 7, 'scope': 'saas'})
 
     def test_passes_agent_and_company_to_revocation_check(self):
         self._call_tool(
@@ -87,7 +109,7 @@ class McpServerRoutingTests(SimpleTestCase):
             {
                 'path': '/api/v1/companies/{company_id}/items/',
                 'method': 'GET',
-                'path_params': {'company_id': '7'},
+                'path_params': {'company_id': '42'},
             }
         )
         self.assertEqual(response.status_code, 200)
@@ -99,7 +121,7 @@ class McpServerRoutingTests(SimpleTestCase):
             {
                 'path': '/api/v1/companies/{company_id}/items/',
                 'method': 'GET',
-                'path_params': {'company_id': '7'},
+                'path_params': {'company_id': '42'},
             }
         )
         self.assertEqual(response.status_code, 200)
@@ -107,9 +129,11 @@ class McpServerRoutingTests(SimpleTestCase):
         result = payload['result']
         self.assertFalse(result.get('isError'))
         body = json.loads(result['content'][0]['text'])
-        self.assertEqual(body['company_id'], 7)
+        self.assertEqual(body['company_id'], 42)
         self.assertEqual(body['agent_id'], self.claims['agent_id'])
         self.assertTrue(body['user_ok'])
+        self.assertEqual(body['user_agent_id'], self.claims['agent_id'])
+        self.assertIsNone(body['user_marker'])
 
     def test_read_only_post_tool_allowed_in_read_only_mode(self):
         claims = dict(self.claims)
@@ -132,7 +156,7 @@ class McpServerRoutingTests(SimpleTestCase):
                 }
             ),
             content_type='application/json',
-            HTTP_AUTHORIZATION='Bearer test-token',
+            HTTP_AUTHORIZATION=f'Bearer {self._token(claims)}',
         )
         request.user = _AuthUser()
         request.auth = claims

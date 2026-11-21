@@ -197,6 +197,26 @@ class InternalAssertionRs256Tests(unittest.TestCase):
                 expected_target=TEST_TARGET,
             )
 
+    def test_empty_target_does_not_match_expected_target(self):
+        now = int(time.time())
+        for target in ('', '///', None):
+            claims = {
+                'iss': TEST_ISSUER,
+                'aud': REVOCATION_AUDIENCE,
+                'sub': 'service',
+                'scope': REVOCATION_SCOPE,
+                'iat': now,
+                'exp': now + 60,
+                'jti': uuid.uuid4().hex,
+            }
+            if target is not None:
+                claims['target'] = target
+            token = jwt.encode(claims, self.private_pem, algorithm='RS256', headers={'kid': self.kid})
+            token = token.decode('utf-8') if isinstance(token, bytes) else token
+            with self.assertRaises(InternalAssertionError) as ctx:
+                self._verify(token)
+            self.assertIn('target', str(ctx.exception).lower())
+
     def test_wrong_target(self):
         token = self._sign_revocation()
         with self.assertRaises(InternalAssertionError):

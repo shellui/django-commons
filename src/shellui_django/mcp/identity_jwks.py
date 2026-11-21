@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlsplit
 
 import jwt
 from jwt.algorithms import RSAAlgorithm
@@ -15,6 +16,8 @@ from jwt.algorithms import RSAAlgorithm
 _CACHE_TTL_SECONDS = 300
 # Match ``INTERNAL_ASSERTION_LEEWAY_SECONDS`` in ``internal`` for Identity JWT verification.
 IDENTITY_RS256_LEEWAY_SECONDS = 5
+JWKS_MAX_RESPONSE_BYTES = 256 * 1024
+_DEFAULT_JWKS_TIMEOUT_SECONDS = 10.0
 _cache_lock = threading.Lock()
 _jwks_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -51,13 +54,79 @@ def identity_jwks_url_for_issuer(issuer: str) -> str:
     return f'{base}/.well-known/jwks.json'
 
 
-def _fetch_jwks_document(url: str, *, timeout: float) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers={'Accept': 'application/json'})
+def _allow_insecure_jwks_url() -> bool:
+    """``http`` JWKS URLs are accepted only when Django ``DEBUG`` is on."""
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read()
-    except (urllib.error.URLError, TimeoutError) as exc:
+        from django.conf import settings
+
+        return bool(settings.DEBUG)
+    except Exception:
+        return False
+
+
+def _validated_jwks_url(url: str) -> str:
+    """Return ``url`` when it is the exact document to fetch."""
+    raw = (url or '').strip()
+    if not raw or any(char in raw for char in ('\r', '\n', '\t', ' ')):
+        raise IdentityJwksError('Identity JWKS URL is invalid.')
+    parsed = urlsplit(raw)
+    if parsed.username or parsed.password or parsed.fragment:
+        raise IdentityJwksError('Identity JWKS URL is invalid.')
+    if not parsed.hostname or not parsed.netloc:
+        raise IdentityJwksError('Identity JWKS URL is invalid.')
+    if parsed.scheme == 'https':
+        return raw
+    if parsed.scheme == 'http' and _allow_insecure_jwks_url():
+        return raw
+    if parsed.scheme == 'http':
+        raise IdentityJwksError('Identity JWKS URL must use https.')
+    raise IdentityJwksError('Identity JWKS URL is invalid.')
+
+
+def _positive_timeout(timeout: float) -> float:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise IdentityJwksError('Identity JWKS timeout is required.')
+    if timeout <= 0:
+        raise IdentityJwksError('Identity JWKS timeout is required.')
+    return float(timeout)
+
+
+def _jwks_opener() -> urllib.request.OpenerDirector:
+    """HTTP(S) opener that does not follow redirects or local URL schemes."""
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.HTTPHandler())
+    opener.add_handler(urllib.request.HTTPSHandler())
+    opener.add_handler(urllib.request.HTTPErrorProcessor())
+    opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+    return opener
+
+
+def _fetch_jwks_document(url: str, *, timeout: float) -> dict[str, Any]:
+    fetch_url = _validated_jwks_url(url)
+    timeout_s = _positive_timeout(timeout)
+    request = urllib.request.Request(fetch_url, headers={'Accept': 'application/json'})
+    try:
+        response = _jwks_opener().open(request, timeout=timeout_s)
+    except urllib.error.HTTPError as exc:
+        if 300 <= int(getattr(exc, 'code', 0) or 0) < 400:
+            raise IdentityJwksError('Identity JWKS redirects are not allowed.') from exc
         raise IdentityJwksError('Failed to fetch Identity JWKS.') from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise IdentityJwksError('Failed to fetch Identity JWKS.') from exc
+    with response:
+        final_url = response.geturl()
+        if urlsplit(final_url) != urlsplit(fetch_url):
+            raise IdentityJwksError('Identity JWKS redirects are not allowed.')
+        declared = response.headers.get('Content-Length')
+        if declared is not None:
+            try:
+                if int(declared) > JWKS_MAX_RESPONSE_BYTES:
+                    raise IdentityJwksError('Identity JWKS response is too large.')
+            except ValueError as exc:
+                raise IdentityJwksError('Identity JWKS response is too large.') from exc
+        raw = response.read(JWKS_MAX_RESPONSE_BYTES + 1)
+    if len(raw) > JWKS_MAX_RESPONSE_BYTES:
+        raise IdentityJwksError('Identity JWKS response is too large.')
     try:
         document = json.loads(raw.decode('utf-8'))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -67,7 +136,7 @@ def _fetch_jwks_document(url: str, *, timeout: float) -> dict[str, Any]:
     return document
 
 
-def get_jwks_document(*, jwks_url: str | None = None, jwks: dict[str, Any] | None = None, timeout: float = 10.0) -> dict[str, Any]:
+def get_jwks_document(*, jwks_url: str | None = None, jwks: dict[str, Any] | None = None, timeout: float = _DEFAULT_JWKS_TIMEOUT_SECONDS) -> dict[str, Any]:
     if jwks is not None:
         if not isinstance(jwks.get('keys'), list):
             raise IdentityJwksError('Inline JWKS document is invalid.')
