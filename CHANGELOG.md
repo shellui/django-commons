@@ -23,6 +23,18 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.7.0] - 2026-11-24
+
+### ✨ Feature
+
+- Add `shellui_django.telemetry` behind the `[otel]` extra. `setup_telemetry()` exports traces and metrics over OTLP/HTTP and puts `trace_id` / `span_id` on log records. Nothing is imported from OpenTelemetry, and there is no runtime overhead, unless an OTLP endpoint is set and `OTEL_SDK_DISABLED` is not true.
+- Instrument Django, psycopg, redis, requests, and Celery, and propagate W3C `traceparent` on outbound `requests` and into Celery tasks. Health, readiness, liveness, static, favicon, and `/metrics` URLs are excluded from traces. SQL literals, credential query parameters, request bodies, and auth or cookie headers are removed from spans.
+- Add `counter()`, `histogram()`, and `set_shellui_attributes()` so services can record metrics and attach opaque company and user ids.
+
+### 📚 Documentation
+
+- Document enabling telemetry from WSGI, ASGI, Celery, and long-running management commands in `docs/telemetry.md`.
+
 ## [0.6.0] - 2026-11-21
 
 Breaking: services must pass the new `McpServer` settings listed under Changed before upgrading.
