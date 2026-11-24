@@ -10,6 +10,7 @@ from django.test import Client, override_settings
 from opentelemetry import trace
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
 
 from shellui_django.telemetry import (
     TraceContextFormatter,
@@ -138,6 +139,28 @@ def test_sampler_env_is_honored(monkeypatch):
     with tracer.start_as_current_span('dropped'):
         pass
     assert span_exporter.get_finished_spans() == ()
+
+
+def test_orphan_client_spans_are_dropped(monkeypatch):
+    monkeypatch.delenv('OTEL_TRACES_SAMPLER', raising=False)
+    span_exporter, _reader = _enable(monkeypatch)
+    tracer = trace.get_tracer('shellui.test')
+    with tracer.start_as_current_span('SELECT', kind=SpanKind.CLIENT):
+        pass
+    with tracer.start_as_current_span('GET', kind=SpanKind.CLIENT, attributes={'http.request.method': 'GET'}):
+        pass
+    with tracer.start_as_current_span('task', kind=SpanKind.CONSUMER):
+        with tracer.start_as_current_span('UPDATE', kind=SpanKind.CLIENT):
+            pass
+    assert sorted(span.name for span in span_exporter.get_finished_spans()) == ['GET', 'UPDATE', 'task']
+
+
+def test_sampler_env_keeps_orphan_client_spans(monkeypatch):
+    monkeypatch.setenv('OTEL_TRACES_SAMPLER', 'parentbased_always_on')
+    span_exporter, _reader = _enable(monkeypatch)
+    with trace.get_tracer('shellui.test').start_as_current_span('SELECT', kind=SpanKind.CLIENT):
+        pass
+    assert [span.name for span in span_exporter.get_finished_spans()] == ['SELECT']
 
 
 def test_sql_headers_and_query_are_redacted_on_export(monkeypatch):
