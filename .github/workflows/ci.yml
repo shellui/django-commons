@@ -42,7 +42,7 @@ jobs:
       - name: Run tests
         env:
           DJANGO_SETTINGS_MODULE: tests.django_settings
-        run: uv run python -m django test shellui_django.mcp.tests --verbosity=1
+        run: uv run pytest
 
   gitleaks:
     name: Secret scan
