@@ -62,7 +62,7 @@ OTEL_TRACES_SAMPLER_ARG=0.1
 | `OTEL_EXPORTER_OTLP_CERTIFICATE` | CA bundle for TLS. Client cert and key use the standard `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` and `OTEL_EXPORTER_OTLP_CLIENT_KEY`. |
 | `OTEL_SERVICE_NAME` | Overrides the `service_name` argument. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Overrides `service.version`, `deployment.environment`, and `cloud.region` when those keys are present. |
-| `OTEL_TRACES_SAMPLER` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on` (default), `parentbased_always_off`, `parentbased_traceidratio`. |
+| `OTEL_TRACES_SAMPLER` | Unset by default: parent based, and database or Redis calls with no parent span are dropped (see below). Setting it replaces that default with a standard SDK sampler: `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off`, `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | Sampling ratio in `[0, 1]` for the ratio samplers. |
 | `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` (default) or `none`. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Milliseconds between metric exports. Default 60000. |
@@ -77,6 +77,8 @@ If the endpoint is unset, `setup_telemetry` returns `False` and does not load th
 ## What is recorded
 
 Django server spans, psycopg, redis, requests client spans, and Celery producer and consumer spans. Celery task headers carry the active context, so a trace continues from the request into the task. `requests` injects `traceparent` on outbound calls, including the MCP aggregating gateway.
+
+Database and Redis calls made outside any span are not traced. Idle worker polls, gauge callbacks, and heartbeats would otherwise start a one span trace for every query. The same calls inside a request, a Celery task, or a manual span are recorded as children. Outbound HTTP client calls with no parent are still recorded, so the downstream service joins the trace. Wrap background work in a span when its queries should be visible, for example `trace.get_tracer(__name__).start_as_current_span('email.send')`. Set `OTEL_TRACES_SAMPLER=parentbased_always_on` to keep every call.
 
 These paths are not traced: a URL whose path ends in `health`, `healthz`, `ready`, `readiness`, `readyz`, `live`, or `livez`, plus `/static/`, `/favicon.ico`, and `/metrics`.
 
