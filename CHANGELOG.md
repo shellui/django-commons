@@ -23,6 +23,12 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.7.1] - 2026-11-24
+
+### 🐛 Bug Fixes
+
+- Telemetry no longer exports a one span trace for every database or Redis call made outside a request, task, or manual span (idle worker polls, gauge callbacks, heartbeats). The default sampler is parent based and drops those root client spans. Outbound HTTP calls and calls inside a traced operation are unchanged. `OTEL_TRACES_SAMPLER` replaces the default when set.
+
 ## [0.7.0] - 2026-11-24
 
 ### ✨ Feature

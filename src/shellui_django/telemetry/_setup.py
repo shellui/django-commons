@@ -15,6 +15,8 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON, Decision, ParentBased, Sampler, SamplingResult
+from opentelemetry.trace import SpanKind
 from opentelemetry.util._once import Once
 
 from shellui_django.telemetry._env import (
@@ -66,6 +68,35 @@ class _SanitizingSpanProcessor:
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         return True
+
+
+class _DropOrphanClientSpans(Sampler):
+    """Root sampler that drops database and Redis calls made outside any span.
+
+    Idle worker polls, gauge callbacks, and heartbeats run outside a request or
+    task, so each query would start a one span trace. Calls inside a traced
+    operation are children and follow the parent decision. Outbound HTTP client
+    calls are kept so a downstream service still joins the trace.
+    """
+
+    def should_sample(self, parent_context, trace_id, name, kind=None, attributes=None, links=None, trace_state=None):
+        if kind is SpanKind.CLIENT and not _is_http(attributes):
+            return SamplingResult(Decision.DROP)
+        return ALWAYS_ON.should_sample(parent_context, trace_id, name, kind, attributes, links, trace_state)
+
+    def get_description(self) -> str:
+        return 'DropOrphanClientSpans'
+
+
+def _is_http(attributes: Any) -> bool:
+    return bool(attributes) and ('http.request.method' in attributes or 'http.method' in attributes)
+
+
+def _sampler() -> Sampler | None:
+    # OTEL_TRACES_SAMPLER wins. None lets the SDK read it.
+    if os.environ.get('OTEL_TRACES_SAMPLER', '').strip():
+        return None
+    return ParentBased(root=_DropOrphanClientSpans())
 
 
 def _resource(
@@ -265,7 +296,7 @@ def _configure_process(
         return False
 
     metrics.set_meter_provider(meter_provider)
-    tracer_provider = TracerProvider(resource=resource, meter_provider=meter_provider)
+    tracer_provider = TracerProvider(resource=resource, sampler=_sampler(), meter_provider=meter_provider)
     tracer_provider.add_span_processor(_SanitizingSpanProcessor())
     if processor is not None:
         tracer_provider.add_span_processor(processor)
