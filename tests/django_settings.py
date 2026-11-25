@@ -8,6 +8,8 @@ INSTALLED_APPS = [
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'rest_framework',
+    'django.contrib.staticfiles',
+    'shellui_django.ui',
 ]
 MIDDLEWARE: list[str] = []
 ROOT_URLCONF = 'shellui_django.mcp.tests.mcp_routing_urlconf'
@@ -32,3 +34,12 @@ SIMPLE_JWT = {
     'ALGORITHM': 'HS256',
     'ISSUER': 'https://identity.example.com',
 }
+
+STATIC_URL = '/static/'
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'APP_DIRS': True,
+        'OPTIONS': {'context_processors': ['django.template.context_processors.request']},
+    }
+]

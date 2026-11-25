@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="{% block html_lang %}{{ page_language|default:'en' }}{% endblock %}" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    {% block meta_robots %}<meta name="robots" content="noindex" />{% endblock %}
+    {% load static %}
+    {% include "shellui_ui/includes/favicons.html" %}
+    <link rel="stylesheet" href="{% static 'css/site.css' %}" />
+    <title>{% block page_title %}{% block title %}Shellui{% endblock %} · {% block service_name %}Shellui{% endblock %}{% endblock %}</title>
+    <script>
+      (function () {
+        var stored = null;
+        try { stored = localStorage.getItem("theme"); } catch (e) {}
+        var theme =
+          stored ||
+          (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        if (theme === "dark") document.documentElement.classList.add("dark");
+      })();
+    </script>
+    {% block extra_head %}{% endblock %}
+  </head>
+  <body class="{% block body_class %}flex min-h-full flex-col bg-muted text-foreground antialiased dark:bg-background{% endblock %}">
+    {% include "shellui_ui/includes/logo_sprite.html" %}
+    <header class="border-b border-border/50 bg-background page-x">
+      <nav class="mx-auto flex h-16 max-w-5xl items-center" aria-label="Global">
+        <a
+          href="{% block brand_href %}/{% endblock %}"
+          class="inline-flex shrink-0 items-center text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          aria-label="{% block brand_label %}Shellui{% endblock %}"
+          translate="no"
+        >
+          <svg class="size-8.5" viewBox="0 0 1080 1080" role="img" aria-hidden="true">
+            <use href="#logo-shellui-mark"></use>
+          </svg>
+        </a>
+      </nav>
+    </header>
+    <main class="{% block main_class %}flex flex-1 items-center page-x py-12 sm:py-16{% endblock %}">
+      {% block main_content %}
+      <div class="mx-auto w-full {% block card_width %}max-w-[480px]{% endblock %} rounded-xl border border-border bg-card p-6 shadow-sm{% block card_class %}{% endblock %}"{% block card_attrs %}{% endblock %}>
+        {% block content %}{% endblock %}
+      </div>
+      {% endblock %}
+    </main>
+    {% block extra_body %}{% endblock %}
+  </body>
+</html>

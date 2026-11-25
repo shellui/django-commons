@@ -1,6 +1,6 @@
 [project]
 name = "shellui-django"
-version = "0.7.1"
+version = "0.7.2"
 description = "Shared Django libraries for Shellui services"
 readme = "README.md"
 license = "MIT"
@@ -70,6 +70,7 @@ test = [
 testpaths = [
     "src/shellui_django/mcp/tests",
     "src/shellui_django/telemetry/tests",
+    "src/shellui_django/ui/tests",
 ]
 
 [build-system]
