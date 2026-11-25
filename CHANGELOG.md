@@ -23,6 +23,12 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.7.2] - 2026-11-25
+
+### ✨ Feature
+
+- Add `shellui_django.ui` with shared `shellui_ui/card_base.html`, `shellui_ui/error.html`, `shellui_ui/includes/favicons.html`, and `shellui_ui/includes/logo_sprite.html` templates so Shellui backend services render the same header, card, and dark-mode layout as Identity.
+
 ## [0.7.1] - 2026-11-24
 
 ### 🐛 Bug Fixes
