@@ -30,6 +30,7 @@ Requires Python 3.14+, Django, and DRF. The `[mcp]` extra adds PyJWT, cryptograp
 |--------|-------------|
 | [`shellui_django.mcp`](docs/mcp.md) | Turn a DRF OpenAPI schema into a secure multi-tenant MCP HTTP server. |
 | [`shellui_django.telemetry`](docs/telemetry.md) | Traces, metrics, and log correlation for Shellui services. |
+| `shellui_django.ui` | Shared card and error templates matching Shellui Identity. |
 | [`shellui_django.testing`](docs/testing.md) | Shared test helpers (planned). |
 
 ## Contributing and releases
