@@ -27,7 +27,7 @@ See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog
 
 ### ✨ Feature
 
-- `x-mcp-destination: true` marks a tool property that says where a call sends data. `tools_from_schema` keeps it on the tool's `inputSchema`, on nested properties and array items too. `shellui_django.mcp.fields` has `McpDestinationCharField`, `McpDestinationEmailField` and `McpDestinationURLField` to set it on a serializer field.
+- `x-mcp-destination: true` marks a tool property that says where a call sends data. `tools_from_schema` keeps it on the tool's `inputSchema`, on nested properties and array items too. `shellui_django.mcp.fields` has `McpDestinationCharField`, `McpDestinationEmailField` and `McpDestinationURLField` to set it on a serializer field. `destination_paths(input_schema)` lists the marked paths of a tool, for service tests.
 - `shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500)` builds the one-line summary a person reads before approving a call. Marked values come first, in full, under labels built from the schema path (never from a key the caller chose), with each list item shown on its own. Non-ASCII and control characters show as escapes, and `user:pass@` is masked in every value. Other values are cut one by one. It raises `ApprovalSummaryTooLong` when the marked values do not fit, so a caller can refuse the call instead of shortening a destination.
 
 ### 🏗 Chore

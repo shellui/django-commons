@@ -4,7 +4,7 @@ from drf_spectacular.plumbing import ComponentRegistry
 from rest_framework import serializers
 from rest_framework.views import APIView
 
-from shellui_django.mcp.approval_summary import ApprovalSummaryTooLong, mask_userinfo, summarize_arguments
+from shellui_django.mcp.approval_summary import ApprovalSummaryTooLong, destination_paths, mask_userinfo, summarize_arguments
 from shellui_django.mcp.fields import McpDestinationCharField, McpDestinationEmailField, McpDestinationURLField
 from shellui_django.mcp.openapi_tools import tools_from_schema
 
@@ -62,6 +62,13 @@ class DestinationMarkerSchemaTests(SimpleTestCase):
         self.assertIs(body['audience']['properties']['emails']['items']['x-mcp-destination'], True)
         for plain in ('name', 'description', 'note'):
             self.assertNotIn('x-mcp-destination', body[plain])
+
+    def test_destination_paths_lists_every_marked_property_for_service_tests(self):
+        self.assertEqual(
+            destination_paths(_tool_schema()),
+            {'url', 'to', 'redirectUri', 'hosts', 'audience.emails'},
+        )
+        self.assertEqual(destination_paths(None), set())
 
     def test_fields_are_the_plain_drf_fields(self):
         self.assertTrue(issubclass(McpDestinationCharField, serializers.CharField))

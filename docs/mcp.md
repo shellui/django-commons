@@ -181,6 +181,8 @@ Mark every field that holds a place the call reaches or tells someone about (a w
 - Every other value is cut on its own (60 characters) under `Arguments:`, so one long argument cannot push another out of view.
 - If the marked values do not fit in the line, `ApprovalSummaryTooLong` is raised. Refuse the call; do not shorten a destination.
 
+`destination_paths(input_schema)` returns the dotted argument paths a tool marks (`audience.emails` for a list), so a service can pin its marked fields in a test.
+
 Nothing is guessed from key names. A tool whose destination fields are not marked shows them as ordinary arguments (masked and cut), so mark them.
 
 ### Read-only POST allowlist

@@ -115,6 +115,30 @@ def _collect(value: Any, node: Any, label: str, out: list[tuple[str, str]]) -> N
             _collect(item, node['items'], f'{label}[{index}]', out)
 
 
+def destination_paths(input_schema: dict[str, Any] | None) -> set[str]:
+    """Dotted argument paths a tool schema marks as destinations (a list is its own path, not ``path[0]``).
+
+    Services use it in tests to pin which fields of each tool carry ``x-mcp-destination``.
+    """
+    found: set[str] = set()
+
+    def walk(node: Any, path: str) -> None:
+        if not isinstance(node, dict):
+            return
+        items = node.get('items')
+        if _is_marked(node) or _is_marked(items):
+            found.add(path)
+        for key, child in _properties(node).items():
+            walk(child, f'{path}.{key}')
+        if isinstance(items, dict):
+            for key, child in _properties(items).items():
+                walk(child, f'{path}.{key}')
+
+    for name, node in _schema_fields(input_schema).items():
+        walk(node, name)
+    return found
+
+
 def _without_destinations(value: Any, node: Any) -> Any:
     """``value`` with every destination leaf removed, ``_REMOVED`` when nothing is left."""
     if not isinstance(node, dict):
