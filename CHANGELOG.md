@@ -23,6 +23,18 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [Unreleased]
+
+### 🚨 Changed
+
+- `django` is pinned to 6.1.3 and `djangorestframework` to 3.18.3. A service that upgrades to the next release moves to Django 6.1.
+
+### 🏗 Chore
+
+- Python 3.15 in `.python-version`. CI runs the tests on Python 3.14 and 3.15, and the package still supports Python 3.14 and later.
+- ruff 0.17.6 in the lockfile.
+- GitHub Actions: actions/checkout v7, astral-sh/setup-uv v10.4.0.
+
 ## [0.7.2] - 2026-11-25
 
 ### ✨ Feature

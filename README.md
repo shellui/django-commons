@@ -22,7 +22,7 @@ pip install shellui-django[mcp]    # MCP server helpers
 pip install shellui-django[otel]   # OpenTelemetry traces, metrics, and log correlation
 ```
 
-Requires Python 3.14+, Django, and DRF. The `[mcp]` extra adds PyJWT, cryptography, SimpleJWT, and requests for MCP auth, signed internal calls, and the aggregating gateway. The `[otel]` extra adds the OpenTelemetry SDK, the OTLP/HTTP exporter, and instrumentation for Django, psycopg, redis, requests, Celery, and logging. See [docs/telemetry.md](docs/telemetry.md).
+Requires Python 3.14+ (tested on 3.15), Django, and DRF. The `[mcp]` extra adds PyJWT, cryptography, SimpleJWT, and requests for MCP auth, signed internal calls, and the aggregating gateway. The `[otel]` extra adds the OpenTelemetry SDK, the OTLP/HTTP exporter, and instrumentation for Django, psycopg, redis, requests, Celery, and logging. See [docs/telemetry.md](docs/telemetry.md).
 
 ## Modules
 
