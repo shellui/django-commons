@@ -75,7 +75,9 @@ def main(dist: Path, commit: str, version: str) -> int:
                 if not other.is_file():
                     problems.append(f'{path.name} is not produced by a clean build of {full}')
                 elif sha256(path) != sha256(other):
-                    problems.append(f'{path.name} differs from a clean build of {full}: {sha256(path)} != {sha256(other)}')
+                    problems.append(
+                        f'{path.name} differs from a clean build of {full}: {sha256(path)} != {sha256(other)}'
+                    )
             for path in sorted(p for p in rebuilt.iterdir() if not p.name.startswith('.')):
                 if not (dist / path.name).is_file():
                     problems.append(f'a clean build also produces {path.name}, which is not in {dist}')
