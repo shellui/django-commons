@@ -208,6 +208,21 @@ class OpenApiToolsNestedRefTests(SimpleTestCase):
         self.assertEqual(body['url']['type'], 'string')
         self.assertEqual(body['url']['format'], 'uri')
 
+    def test_blank_and_null_string_one_of_is_nullable_string(self):
+        body = self._body(
+            {
+                'slug': {
+                    'oneOf': [
+                        {'type': 'string', 'pattern': '^[-a-zA-Z0-9_]+$'},
+                        {'type': 'string', 'maxLength': 0},
+                        {'type': 'null'},
+                    ],
+                },
+            },
+            {},
+        )
+        self.assertEqual(body['slug']['type'], ['string', 'null'])
+
     def test_nested_serializer_ref_is_typed_object(self):
         components = {
             'Child': {
