@@ -1,42 +1,67 @@
 """One-line summary of a tool call for the person who approves it.
 
 A tool marks the properties that say where a call sends data with ``x-mcp-destination: true`` in its
-``inputSchema`` (also on nested properties and array items). Those values are shown first, in full,
-under a label built from the schema path, never from a key the caller chose. Every other value is
-cut on its own, so no argument can push another out of view. Nothing here guesses from key names.
+``inputSchema`` (see ``destinations``). Those values are shown first, in full, under a label built
+from the schema path, never from a key the caller chose. Every other value is cut on its own, so no
+argument can push another out of view. Nothing here guesses from key names.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
-from shellui_django.mcp.openapi_tools import DESTINATION_MARKER
+from shellui_django.mcp.destinations import (
+    CONTAINERS,
+    DESTINATION_MARKER,
+    ENVELOPE_KEYS,
+    declarations,
+    destination_paths,
+    is_marked,
+    properties,
+)
 
-# Keys the gateway fills in itself, or that never reach the tool as an argument.
-_ENVELOPE_KEYS = frozenset({'path', 'method', 'headers'})
-_CONTAINERS = ('path_params', 'query', 'body')
+__all__ = [
+    'ApprovalSummaryRefused',
+    'ApprovalSummaryTooLong',
+    'DESTINATION_MARKER',
+    'destination_paths',
+    'mask_url_secrets',
+    'summarize_arguments',
+]
+
 _OTHER_VALUE_MAX = 60
 _KEY_MAX = 40
 _RESERVED_FOR_OTHERS = 60
 _REMOVED = object()
+UNDECLARED_WARNING = 'WARNING: this tool has not declared where it sends data, so check every address in the arguments.'
 # ``scheme://userinfo@`` up to the last ``@`` of the authority, which is where a URL parser ends userinfo.
 _USERINFO = re.compile(r'([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s?#]*@')
+# Query parameters that carry a credential: ``?token=...``, ``&X-Amz-Signature=...``.
+_SECRET_PARAM = re.compile(
+    r'([?&;](?:[\w.\-]*(?:token|secret|signature|password|passwd|apikey|api[_-]key|access[_-]key|auth|credential|sig|key|code)[\w.\-]*))=([^&#\s"\']*)',
+    re.IGNORECASE,
+)
 
 
-class ApprovalSummaryTooLong(ValueError):
+class ApprovalSummaryRefused(ValueError):
+    """The call names destinations the approval line cannot show faithfully. Refuse the call."""
+
+
+class ApprovalSummaryTooLong(ApprovalSummaryRefused):
     """The destinations do not fit in the line. The call should be refused, not shortened."""
 
 
-def mask_userinfo(text: str) -> str:
-    """Replace ``user:pass@`` in every URL in ``text`` with ``***@``."""
-    return _USERINFO.sub(r'\1***@', text)
+def mask_url_secrets(text: str) -> str:
+    """Hide ``user:pass@`` and credential-looking query parameter values (``?token=...``) in ``text``."""
+    return _SECRET_PARAM.sub(r'\1=***', _USERINFO.sub(r'\1***@', text))
 
 
 def _mask_all(value: Any) -> Any:
     if isinstance(value, str):
-        return mask_userinfo(value)
+        return mask_url_secrets(value)
     if isinstance(value, dict):
         return {key: _mask_all(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -65,99 +90,54 @@ def _fit(text: str, limit: int) -> str:
     return ''.join(kept).rstrip() + '...'
 
 
-def _properties(node: Any) -> dict[str, Any]:
-    props = node.get('properties') if isinstance(node, dict) else None
-    return props if isinstance(props, dict) else {}
-
-
-def _schema_fields(schema: dict[str, Any] | None) -> dict[str, Any]:
-    """Argument name to schema node, whether the schema is flat or has ``query``/``body`` sections."""
-    fields = {k: v for k, v in _properties(schema).items() if k not in _CONTAINERS and k not in _ENVELOPE_KEYS}
-    for section in _CONTAINERS:
-        for key, node in _properties(_properties(schema).get(section)).items():
-            fields.setdefault(key, node)
-    return fields
-
-
-def _argument_pairs(arguments: dict[str, Any]) -> list[tuple[str, Any]]:
-    """Every argument the tool would receive, whether sent flat or inside ``query``/``body``/``path_params``."""
-    pairs: list[tuple[str, Any]] = []
+def _argument_pairs(arguments: dict[str, Any]) -> list[tuple[str | None, str, Any]]:
+    """``(section, name, value)`` for every argument the tool would receive, flat or inside a section."""
+    pairs: list[tuple[str | None, str, Any]] = []
     for key, value in arguments.items():
         key = str(key)
-        if key in _ENVELOPE_KEYS:
+        if key in ENVELOPE_KEYS:
             continue
-        if key in _CONTAINERS and isinstance(value, dict):
-            pairs.extend((str(inner), item) for inner, item in value.items())
+        if key in CONTAINERS and isinstance(value, dict):
+            pairs.extend((key, str(inner), item) for inner, item in value.items())
         else:
-            pairs.append((key, value))
+            pairs.append((None, key, value))
     return pairs
 
 
-def _is_marked(node: Any) -> bool:
-    return isinstance(node, dict) and node.get(DESTINATION_MARKER) is True
+def _split(value: Any, node: Any, label: str, marked: bool, out: list[tuple[str, str]]) -> Any:
+    """Move the destinations in ``value`` into ``out``. Returns what is left, ``_REMOVED`` when nothing is.
 
-
-def _collect(value: Any, node: Any, label: str, out: list[tuple[str, str]]) -> None:
-    if not isinstance(node, dict):
-        return
-    if _is_marked(node) and not isinstance(node.get('items'), dict):
-        if isinstance(value, (dict, list)) or value is None:
-            return
-        out.append((label, str(value)))
-        return
-    if isinstance(value, dict):
-        props = _properties(node)
-        for key, item in value.items():
-            if str(key) in props:
-                _collect(item, props[str(key)], f'{label}.{key}', out)
-    elif isinstance(value, list) and isinstance(node.get('items'), dict):
-        for index, item in enumerate(value):
-            _collect(item, node['items'], f'{label}[{index}]', out)
-
-
-def destination_paths(input_schema: dict[str, Any] | None) -> set[str]:
-    """Dotted argument paths a tool schema marks as destinations (a list is its own path, not ``path[0]``).
-
-    Services use it in tests to pin which fields of each tool carry ``x-mcp-destination``.
+    ``marked`` is inherited: a marked array marks every item. A marked property that receives an
+    object, or an array holding objects, cannot be shown faithfully, so the call is refused.
     """
-    found: set[str] = set()
-
-    def walk(node: Any, path: str) -> None:
-        if not isinstance(node, dict):
-            return
-        items = node.get('items')
-        if _is_marked(node) or _is_marked(items):
-            found.add(path)
-        for key, child in _properties(node).items():
-            walk(child, f'{path}.{key}')
-        if isinstance(items, dict):
-            for key, child in _properties(items).items():
-                walk(child, f'{path}.{key}')
-
-    for name, node in _schema_fields(input_schema).items():
-        walk(node, name)
-    return found
-
-
-def _without_destinations(value: Any, node: Any) -> Any:
-    """``value`` with every destination leaf removed, ``_REMOVED`` when nothing is left."""
-    if not isinstance(node, dict):
-        return value
-    if _is_marked(node) and not isinstance(node.get('items'), dict):
+    node = node if isinstance(node, dict) else {}
+    marked = marked or is_marked(node)
+    if marked:
+        if value is None:
+            return _REMOVED
+        if isinstance(value, dict):
+            raise ApprovalSummaryRefused(f'{label} is a destination and must be text, not an object.')
+        if isinstance(value, list):
+            items = node.get('items')
+            for index, item in enumerate(value):
+                _split(item, items, f'{label}[{index}]', True, out)
+            return _REMOVED
+        out.append((label, str(value)))
         return _REMOVED
     if isinstance(value, dict):
-        props = _properties(node)
-        kept = {}
-        had_destination = False
+        props = properties(node)
+        kept: dict[str, Any] = {}
+        removed = False
         for key, item in value.items():
-            rest = _without_destinations(item, props.get(str(key)))
+            child = props.get(str(key))
+            rest = item if child is None else _split(item, child, f'{label}.{key}', False, out)
             if rest is _REMOVED:
-                had_destination = True
+                removed = True
             else:
                 kept[key] = rest
-        return _REMOVED if had_destination and not kept else kept
+        return _REMOVED if removed and not kept else kept
     if isinstance(value, list) and isinstance(node.get('items'), dict):
-        kept_items = [_without_destinations(item, node['items']) for item in value]
+        kept_items = [_split(item, node['items'], f'{label}[{index}]', False, out) for index, item in enumerate(value)]
         kept_items = [item for item in kept_items if item is not _REMOVED]
         return kept_items if kept_items or not value else _REMOVED
     return value
@@ -175,36 +155,49 @@ def summarize_arguments(
     arguments: dict[str, Any] | None,
     input_schema: dict[str, Any] | None,
     max_length: int = 500,
+    *,
+    destinations_declared: bool = True,
+    redact: Callable[[Any], Any] | None = None,
 ) -> str:
-    """The approval line for a call. Raises ``ApprovalSummaryTooLong`` when the destinations do not fit.
+    """The approval line for a call. Raises ``ApprovalSummaryRefused`` (or its ``ApprovalSummaryTooLong``).
 
-    ``arguments`` are the arguments the tool will receive, with secrets already masked, and
-    ``input_schema`` is the tool's ``inputSchema``. Without ``x-mcp-destination`` markers every value
-    is shown as an ordinary argument, still with ``user:pass@`` masked and each value cut on its own.
+    ``arguments`` are the arguments the tool will receive and ``input_schema`` is the tool's
+    ``inputSchema``. Destinations are taken out first and never pass through ``redact``, which hides
+    secret-looking values in what is left. A caller sending the same name under two sections, or flat,
+    is checked against every declaration of that name, so an unmarked ``query.url`` cannot hide a marked
+    ``body.url``. With ``destinations_declared`` false the line starts with a warning.
     """
     if not isinstance(arguments, dict):
         return ''
-    fields = _schema_fields(input_schema)
+    declared, sections = declarations(input_schema)
     destinations: dict[str, str] = {}
     others: dict[str, str] = {}
-    for key, value in _argument_pairs(arguments):
-        node = fields.get(key)
+    for section, key, value in _argument_pairs(arguments):
+        own = sections[section].get(key) if section else None
+        nodes = [own] if own is not None else declared.get(key, [])
         found: list[tuple[str, str]] = []
-        _collect(value, node, key, found)
-        for label, text in found:
-            destinations[_unique(_fit(label, 120), destinations)] = mask_userinfo(text)
-        rest = _without_destinations(value, node) if found else value
+        rest: Any = value
+        for node in nodes:
+            part: list[tuple[str, str]] = []
+            left = _split(value, node, key, False, part)
+            if part:
+                found.extend(part)
+                rest = left
+        for label, text in dict.fromkeys(found):
+            destinations[_unique(_fit(label, 120), destinations)] = mask_url_secrets(text)
         if rest is _REMOVED:
             continue
+        if redact is not None:
+            rest = redact({key: rest})[key]
         text = rest if isinstance(rest, str) else json.dumps(_mask_all(rest), sort_keys=True, default=str, ensure_ascii=True)
-        others[_unique(_fit(key, _KEY_MAX), others)] = _fit(mask_userinfo(text), _OTHER_VALUE_MAX)
+        others[_unique(_fit(key, _KEY_MAX), others)] = _fit(mask_url_secrets(text), _OTHER_VALUE_MAX)
     parts: list[str] = []
+    if not destinations_declared:
+        parts.append(UNDECLARED_WARNING)
     if destinations:
         text = 'Destinations: ' + json.dumps(destinations, ensure_ascii=True)
-        if len(text) > max_length - _RESERVED_FOR_OTHERS:
-            raise ApprovalSummaryTooLong(
-                f'The destinations take {len(text)} characters, more than the {max_length - _RESERVED_FOR_OTHERS} allowed.'
-            )
+        if len(text) > max_length - _RESERVED_FOR_OTHERS - len(UNDECLARED_WARNING) * (not destinations_declared):
+            raise ApprovalSummaryTooLong(f'The destinations take {len(text)} characters and do not fit in the approval line.')
         parts.append(text)
     if others:
         parts.append('Arguments: ' + json.dumps(others, ensure_ascii=True))

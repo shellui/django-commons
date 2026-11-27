@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 from shellui_django.mcp.approval_summary import (
     ApprovalSummaryTooLong,
     destination_paths,
-    mask_userinfo,
+    mask_url_secrets,
     summarize_arguments,
 )
 from shellui_django.mcp.fields import McpDestinationCharField, McpDestinationEmailField, McpDestinationURLField
@@ -182,4 +182,4 @@ class SummaryTests(SimpleTestCase):
         self.assertEqual(summarize_arguments({}, self.schema), '')
         self.assertEqual(summarize_arguments({'method': 'POST', 'path': '/x', 'headers': {'a': 'b'}}, self.schema), '')
         self.assertLessEqual(len(self.summary({'name': 5, 'url': None, 'hosts': None, 'audience': 'x'})), 500)
-        self.assertEqual(mask_userinfo('no url here'), 'no url here')
+        self.assertEqual(mask_url_secrets('no url here'), 'no url here')

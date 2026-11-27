@@ -172,18 +172,26 @@ Keys ending in `_hint` are always redacted. Names matching `(password|secret|tok
 
 ### Destination fields
 
-Mark every field that holds a place the call reaches or tells someone about (a webhook URL, an email recipient, a redirect, an allowed origin or host, a sending domain) with `x-mcp-destination: true`. Use the serializer fields in `shellui_django.mcp.fields` (`McpDestinationCharField`, `McpDestinationEmailField`, `McpDestinationURLField`). For a list, use `serializers.ListField(child=McpDestinationEmailField())`: the marker lands on the list items. `tools_from_schema` keeps the marker on the tool's `inputSchema` property, including nested properties and array items.
+Mark every field that holds a place the call reaches or tells someone about (a webhook URL, an email recipient, a redirect, an allowed origin or host, a sending domain) with `x-mcp-destination: true`. Use the serializer fields in `shellui_django.mcp.fields` (`McpDestinationCharField`, `McpDestinationEmailField`, `McpDestinationURLField`). For a list, use `serializers.ListField(child=McpDestinationEmailField())`: the marker lands on the list items. `tools_from_schema` keeps the marker on the tool's `inputSchema` property, including nested properties and array items. Do not strip it in the service.
 
-`shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500)` builds the approval line from those markers:
+The marker is valid on a string, an array of strings, or the string items of one, reached through `properties` and `items`. A marker anywhere else (under `oneOf`, `anyOf`, `allOf`, `additionalProperties`, `patternProperties`, on an object or a number, or with a value other than `true`) would be ignored at runtime, so `tools_from_schema` raises `DestinationMarkerError` when the schema is built, which fails the service at startup and in its tests.
 
-- Marked values come first, in full, as `Destinations: {"<label>": "<value>"}`. The label is built from the schema path (`audience.emails[1]`), never from a key the caller sent, so a caller cannot spoof or collide with it. Each list item has its own label.
-- Non-ASCII and control characters are shown as escapes (a lookalike letter shows as `\u0430`), and `user:pass@` in any URL, in any value, is shown as `***@`.
-- Every other value is cut on its own (60 characters) under `Arguments:`, so one long argument cannot push another out of view.
-- If the marked values do not fit in the line, `ApprovalSummaryTooLong` is raised. Refuse the call; do not shorten a destination.
+`tools_from_schema(schema, destinations_declared=True)` writes `_meta.destinations_declared`. Pass it once the service's contract test runs the lint below. A gateway shows a warning on the approval line of any tool without it.
+
+`shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500, destinations_declared=True, redact=None)` builds the approval line from those markers:
+
+- Marked values come first, in full, as `Destinations: {"<label>": "<value>"}`. The label is built from the schema path (`audience.emails[1]`, `contacts[0].email`), never from a key the caller sent, and a repeated label gets ` #2`, so nothing is lost to a collision. Each list item has its own label. A marked array marks every item.
+- A name that two sections declare (`query.url` and `body.url`), or that is sent flat, is checked against every declaration: an unmarked one cannot hide a marked one.
+- A marked property that receives an object, or a list holding objects, raises `ApprovalSummaryRefused`. If the marked values do not fit in the line, `ApprovalSummaryTooLong` (a subclass) is raised. Refuse the call; do not shorten a destination.
+- Non-ASCII and control characters are shown as escapes (a lookalike letter shows as `\u0430`). `user:pass@` and credential-looking query parameters (`?token=`, `?key=`, `?sig=`, `?secret=` and similar) are shown as `***` in every value.
+- Every other value is cut on its own (60 characters) under `Arguments:`. `redact`, if given, hides secret-looking values in those other values only. Destinations are taken out first and never pass through it.
+- With `destinations_declared=False` the line starts with a warning.
 
 `destination_paths(input_schema)` returns the dotted argument paths a tool marks (`audience.emails` for a list), so a service can pin its marked fields in a test.
 
-Nothing is guessed from key names. A tool whose destination fields are not marked shows them as ordinary arguments (masked and cut), so mark them.
+Contract-test lint: `shellui_django.mcp.destinations.lint_destination_names(tools, allow={})` returns problems for every string or list-of-strings argument of a write tool whose name looks like a destination (`*url`, `*uri`, `*host`, `*email`, `*domain`, `*origin*`, `redirect*`, `callback*`, `*endpoint`, `*recipient`) and is neither marked nor listed in `allow` (tool name to reviewed dotted paths). A new unmarked `callback_url` fails the service's tests. A stale `allow` entry fails too. Read-only tools are skipped.
+
+Nothing is guessed from key names at runtime. A tool whose destination fields are not marked shows them as ordinary arguments (masked and cut), so mark them.
 
 ### Read-only POST allowlist
 

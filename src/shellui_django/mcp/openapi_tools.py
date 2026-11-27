@@ -6,11 +6,15 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from shellui_django.mcp.destinations import (
+    DESTINATION_MARKER,
+    DestinationMarkerError,
+    validate_destination_schema,
+)
 from shellui_django.mcp.openapi_mcp import tool_access_flags
 from shellui_django.mcp.routing import path_parameter_names
 
 MCP_TOOL_TAG = 'mcp-tools'
-DESTINATION_MARKER = 'x-mcp-destination'
 
 
 def _components(root: dict[str, Any]) -> dict[str, Any]:
@@ -225,6 +229,41 @@ def _client_prop_core(
     return out
 
 
+def _marker_count(node: Any, root: dict[str, Any], seen: frozenset[str] = frozenset()) -> int:
+    """Markers anywhere in a raw OpenAPI node, following ``$ref`` into components."""
+    if isinstance(node, list):
+        return sum(_marker_count(item, root, seen) for item in node)
+    if not isinstance(node, dict):
+        return 0
+    count = 1 if DESTINATION_MARKER in node else 0
+    for key, value in node.items():
+        if key == '$ref' and isinstance(value, str) and value.startswith('#/components/schemas/'):
+            name = value.rsplit('/', 1)[-1]
+            if name not in seen:
+                count += _marker_count(_components(root).get(name), root, seen | {name})
+        elif key != DESTINATION_MARKER:
+            count += _marker_count(value, root, seen)
+    return count
+
+
+def _kept_marker_count(node: Any) -> int:
+    """Markers in a converted node, reached through ``properties`` and ``items`` only."""
+    if not isinstance(node, dict):
+        return 0
+    count = 1 if DESTINATION_MARKER in node else 0
+    count += sum(_kept_marker_count(child) for child in (node.get('properties') or {}).values())
+    return count + _kept_marker_count(node.get('items'))
+
+
+def _assert_markers_kept(raw: Any, converted: Any, root: dict[str, Any], where: str) -> None:
+    """Refuse a schema whose destination markers the conversion would silently drop."""
+    if _marker_count(raw, root) != _kept_marker_count(converted):
+        raise DestinationMarkerError(
+            f'{DESTINATION_MARKER} in {where} sits under oneOf, anyOf, additionalProperties, '
+            'patternProperties or another place the approval summary cannot read. Mark a plain property instead.'
+        )
+
+
 def _parameter_schemas(
     operation: dict[str, Any],
     root: dict[str, Any],
@@ -242,6 +281,7 @@ def _parameter_schemas(
         key = str(name)
         raw = param.get('schema') if isinstance(param.get('schema'), dict) else {'type': 'string'}
         properties[key] = _client_prop_schema(raw if isinstance(raw, dict) else {}, root)
+        _assert_markers_kept(raw, properties[key], root, f'parameter {key}')
         if param.get('required'):
             required.append(key)
     return properties, required
@@ -260,6 +300,7 @@ def _body_schemas(operation: dict[str, Any], root: dict[str, Any]) -> tuple[dict
     if not isinstance(props, dict):
         return {}, []
     properties = {str(key): _client_prop_schema(val, root) for key, val in props.items()}
+    _assert_markers_kept(schema, {'properties': properties}, root, 'the request body')
     required_raw = resolved.get('required') or []
     required = [str(key) for key in required_raw if str(key) in properties]
     return properties, required
@@ -274,7 +315,14 @@ def _slug_tool_name(method: str, path: str, operation_id: str | None) -> str:
     return cleaned[:120]
 
 
-def tools_from_schema(schema: dict[str, Any]) -> list[dict[str, Any]]:
+def tools_from_schema(schema: dict[str, Any], *, destinations_declared: bool = False) -> list[dict[str, Any]]:
+    """Tool definitions for every operation tagged ``mcp-tools``.
+
+    ``destinations_declared`` goes into each tool's ``_meta``. A service sets it once its contract test
+    runs ``lint_destination_names``, which tells the gateway that every destination field of the tool
+    is marked. A tool without it gets a warning on its approval line. Raises ``DestinationMarkerError``
+    when a marker would be ignored.
+    """
     paths = schema.get('paths') or {}
     tools: list[dict[str, Any]] = []
     for path, path_item in paths.items():
@@ -321,16 +369,18 @@ def tools_from_schema(schema: dict[str, Any]) -> list[dict[str, Any]]:
                 }
                 required.append('path_params')
             access = tool_access_flags(operation)
+            input_schema = {
+                'type': 'object',
+                'properties': properties,
+                'required': required,
+                'additionalProperties': False,
+            }
+            validate_destination_schema(input_schema, tool=name)
             tools.append(
                 {
                     'name': name,
                     'description': description,
-                    'inputSchema': {
-                        'type': 'object',
-                        'properties': properties,
-                        'required': required,
-                        'additionalProperties': False,
-                    },
+                    'inputSchema': input_schema,
                     '_meta': {
                         'path': path,
                         'method': method.upper(),
@@ -343,6 +393,7 @@ def tools_from_schema(schema: dict[str, Any]) -> list[dict[str, Any]]:
                         'read_only': access['read_only'],
                         'destructive': access['destructive'],
                         'mcp_tagged': access['tagged'],
+                        'destinations_declared': destinations_declared,
                     },
                 }
             )
