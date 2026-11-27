@@ -1,21 +1,26 @@
 name: Publish to PyPI
 
+# Two jobs, so the one that can publish never runs repository code:
+#   build    contents: read only. Checks the tag, builds with a pinned build environment, verifies the build,
+#            and uploads the files as an artifact.
+#   publish  id-token: write. No checkout. Downloads the artifact, checks it against the build job's digests,
+#            and publishes it.
+
 on:
   push:
     tags:
       - 'v*'
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
-  publish:
-    name: Upload to PyPI
+  build:
+    name: Build and verify
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      digests: ${{ steps.digests.outputs.digests }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -39,7 +44,6 @@ jobs:
         with:
           version: '0.12.1'
           python-version: '3.15'
-          # No cache in a job that can publish: nothing restored from an earlier run can end up in the package.
           enable-cache: false
 
       - name: Check tag matches package version
@@ -52,11 +56,57 @@ jobs:
             exit 1
           fi
 
+      - name: Install the pinned build environment
+        run: |
+          set -euo pipefail
+          uv venv --python 3.15 "${RUNNER_TEMP}/build-env"
+          uv pip install --python "${RUNNER_TEMP}/build-env" --require-hashes --no-deps -r requirements-build.txt
+
       - name: Build
-        run: uv build --out-dir dist
+        run: uv build --no-build-isolation --python "${RUNNER_TEMP}/build-env/bin/python" --out-dir dist
 
       - name: Verify the build is what the tagged commit builds
-        run: python3 scripts/verify_dist.py dist "${GITHUB_SHA}" "${GITHUB_REF_NAME#v}"
+        run: '"${RUNNER_TEMP}/build-env/bin/python" scripts/verify_dist.py dist "${GITHUB_SHA}" "${GITHUB_REF_NAME#v}"'
+
+      - name: Record digests
+        id: digests
+        run: |
+          set -euo pipefail
+          cd dist
+          echo "digests=$(sha256sum -- *.whl *.tar.gz | base64 -w0)" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload the distribution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Upload to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the distribution
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+
+      - name: Check the files are the ones the build job made
+        env:
+          DIGESTS: ${{ needs.build.outputs.digests }}
+        run: |
+          set -euo pipefail
+          cd dist
+          echo "${DIGESTS}" | base64 -d | sha256sum --check --strict
+          test "$(ls -1 | wc -l)" -eq 2
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3

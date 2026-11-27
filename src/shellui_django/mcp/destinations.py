@@ -25,9 +25,9 @@ ENVELOPE_KEYS = frozenset({'path', 'method', 'headers'})
 # Names that look like a place data goes to. A write tool with such a field that is neither marked
 # nor on the service's allow-list fails ``lint_destination_names``.
 _DESTINATION_NAME = re.compile(
-    r'(url|uri|host|hostname|email|domain|endpoint|recipient|dsn)s?$'
-    r'|redirect|callback|origin|webhook|address|target|href|server|phone'
-    r'|(^|[_\-.])(to|cc|bcc)$|reply[_\-]?to',
+    r'(url|uri|host|hostname|email|domain|endpoint|recipient|dsn)s?[_\-]?\d*$'
+    r'|redirect|callback|origin|webhook|address|target|href|server|phone|link|destination'
+    r'|(^|[_\-.])(to|cc|bcc)$|(reply|send)[_\-]?to',
     re.IGNORECASE,
 )
 _UNSUPPORTED_KEYS = frozenset(

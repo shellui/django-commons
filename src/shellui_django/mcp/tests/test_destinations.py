@@ -5,6 +5,7 @@ from functools import partial
 from django.test import SimpleTestCase
 
 from shellui_django.mcp.approval_summary import (
+    NO_MARKERS_WARNING,
     UNDECLARED_WARNING,
     ApprovalSummaryRefused,
     destination_paths,
@@ -248,6 +249,54 @@ class WarningAndMaskingTests(SimpleTestCase):
             with self.subTest(secret=secret):
                 self.assertEqual(mask_url_secrets('https://a.example/h' + secret), 'https://a.example/h' + secret.split('=')[0] + '=***')
 
+    def test_more_credential_names_percent_encoding_and_session_path_parameters_are_masked(self):
+        for secret in ('?apitoken=S', '?apiToken=S', '?oauthtoken=S', '?oauth_token=S', '?hmac=S', '?pw=S', '?PW=S',
+                       '?%74oken=S', '?%2574oken=S', '?api%5Fkey=S', '?access%2Dtoken=S', ';jsessionid=S', ';JSESSIONID=S', '?phpsessid=S'):
+            with self.subTest(secret=secret):
+                name = secret.split('=')[0]
+                self.assertEqual(mask_url_secrets('https://a.example/h' + secret), 'https://a.example/h' + name + '=***')
+        self.assertEqual(
+            mask_url_secrets('https://a.example/app;jsessionid=ABC123?x=1'), 'https://a.example/app;jsessionid=***?x=1'
+        )
+        for visible in ('?auth_url=https://idp.example/x', '?authUrl=https://idp.example/x', '?authurl=x', '?author=x', '?pwa=1'):
+            with self.subTest(visible=visible):
+                self.assertEqual(mask_url_secrets('https://a.example/h' + visible), 'https://a.example/h' + visible)
+
+    def test_names_are_split_on_punctuation_and_camel_case(self):
+        from shellui_django.mcp.approval_summary import _KEY_TOKENS, _is_secret_param
+
+        cases = {
+            'apiKey': ['api', 'Key'],
+            'accessToken': ['access', 'Token'],
+            'XAmzSignature': ['X', 'Amz', 'Signature'],
+            'X-Amz-Signature': ['X', 'Amz', 'Signature'],
+            'client_secret': ['client', 'secret'],
+            'authUrl': ['auth', 'Url'],
+            'HTTPAuthToken': ['HTTP', 'Auth', 'Token'],
+            'token2': ['token', '2'],
+        }
+        for name, words in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(_KEY_TOKENS.findall(name), words)
+        self.assertTrue(all(_is_secret_param(name) for name in ('apiKey', 'XAmzSignature', 'HTTPAuthToken', 'clientSecret')))
+        self.assertFalse(any(_is_secret_param(name) for name in ('authUrl', 'auth_url', 'keyword', 'author')))
+
+    def test_a_declared_tool_with_no_markers_warns_when_an_argument_holds_an_address(self):
+        plain = {'type': 'object', 'properties': {'body': {'type': 'object', 'properties': {'note': S, 'name': S}}}}
+        for body in ({'note': 'send to https://attacker.example/h'}, {'note': 'mail ops@attacker.example'},
+                     {'name': 'x', 'note': {'deep': ['a', 'ftp://attacker.example/x']}}):
+            with self.subTest(body=body):
+                line = _summarize({'body': body}, plain)
+                self.assertTrue(line.startswith(NO_MARKERS_WARNING), line)
+        for body in ({'note': 'hello'}, {'name': 'report.pdf', 'note': 'at 10:30, ok'}):
+            with self.subTest(body=body):
+                self.assertNotIn('WARNING', _summarize({'body': body}, plain))
+        # With a marker anywhere the warning stays off, and an undeclared tool still gets its own warning.
+        self.assertNotIn('WARNING', _summarize({'body': {'token_url': 'https://a.example/'}}, WarningAndMaskingTests.schema))
+        self.assertTrue(
+            _summarize({'body': {'note': 'https://a.example/'}}, plain, destinations_declared=False).startswith(UNDECLARED_WARNING)
+        )
+
     def test_undeclared_is_the_default(self):
         line = summarize_arguments({'body': {'token_url': 'https://a.example/'}}, self.schema)
         self.assertTrue(line.startswith(UNDECLARED_WARNING), line)
@@ -288,6 +337,12 @@ class LintTests(SimpleTestCase):
         problems = lint_destination_names([self._tool({n: S for n in caught + ignored})])
         flagged = {problem.split(': ')[1].split(' ')[0] for problem in problems}
         self.assertEqual(flagged, set(caught), problems)
+
+    def test_link_numbered_destination_and_send_to_names_are_caught(self):
+        caught = ['link', 'download_link', 'url2', 'url3', 'url_2', 'uri10', 'destination', 'destination_path', 'sendTo', 'send_to', 'Link']
+        problems = lint_destination_names([self._tool({n: S for n in caught + ['name', 'blank', 'count']})])
+        flagged = {problem.split(': ')[1].split(' ')[0] for problem in problems}
+        self.assertEqual(flagged, set(caught) - {'blank'} | set(), problems)
 
     def test_an_unmarked_webhook_fails_and_a_marked_one_passes(self):
         self.assertEqual(len(lint_destination_names([self._tool({'webhook': S})])), 1)

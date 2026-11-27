@@ -12,6 +12,7 @@ import json
 import re
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import unquote
 
 from shellui_django.mcp.destinations import (
     CONTAINERS,
@@ -26,6 +27,8 @@ from shellui_django.mcp.destinations import (
 __all__ = [
     'ApprovalSummaryRefused',
     'ApprovalSummaryTooLong',
+    'NO_MARKERS_WARNING',
+    'UNDECLARED_WARNING',
     'DESTINATION_MARKER',
     'destination_paths',
     'mask_url_secrets',
@@ -37,31 +40,48 @@ _KEY_MAX = 40
 _RESERVED_FOR_OTHERS = 60
 _REMOVED = object()
 UNDECLARED_WARNING = 'WARNING: this tool has not declared where it sends data, so check every address in the arguments.'
+NO_MARKERS_WARNING = (
+    'WARNING: this tool declares no destination fields, but an argument contains an address, so check it.'
+)
+# An address in a value: ``scheme://...`` or ``name@host.tld``.
+_ADDRESS = re.compile(r'[A-Za-z][A-Za-z0-9+.\-]*://\S|[^\s@/]+@[^\s@/]+\.[A-Za-z]{2,}')
 # ``scheme://userinfo@`` up to the last ``@`` of the authority, which is where a URL parser ends userinfo.
 _USERINFO = re.compile(r'([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s?#]*@')
 # A ``key=value`` pair of a query string or a fragment: ``?token=...``, ``&X-Amz-Signature=...``, ``#access_token=...``.
 _PARAM = re.compile(r'([?&;#])([^=&#;\s"\'?]+)=([^&#;\s"\']*)')
 _KEY_TOKENS = re.compile(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+')
 # A parameter is a credential when one of its words is one of these (split on punctuation and camelCase), or
-# when the whole name, run together, is one of ``_SECRET_NAMES``. ``authurl`` is neither, so it stays visible.
+# when the whole name, run together, is one of ``_SECRET_NAMES``. ``auth`` alone is a credential, but ``auth_url`` and
+# ``authurl`` are not, so they stay visible. A percent-encoded name (``%74oken``) is decoded before it is matched.
 _SECRET_WORDS = frozenset(
-    {'token', 'secret', 'signature', 'sig', 'password', 'passwd', 'pwd', 'key', 'code', 'auth', 'authorization',
-     'credential', 'credentials', 'apikey', 'jwt', 'bearer', 'assertion', 'otp'}
+    {'token', 'secret', 'signature', 'sig', 'password', 'passwd', 'pwd', 'pw', 'key', 'code', 'authorization',
+     'credential', 'credentials', 'apikey', 'jwt', 'bearer', 'assertion', 'otp', 'hmac'}
 )
 _SECRET_NAMES = frozenset(
     {'accesstoken', 'refreshtoken', 'idtoken', 'authtoken', 'sessiontoken', 'clientsecret', 'apikey', 'accesskey',
-     'secretkey', 'privatekey', 'xapikey', 'xauthtoken', 'sessionid'}
+     'secretkey', 'privatekey', 'xapikey', 'xauthtoken', 'sessionid', 'apitoken', 'oauthtoken', 'auth', 'xauth',
+     'jsessionid', 'phpsessid'}
 )
 
 
 def _is_secret_param(name: str) -> bool:
+    for _ in range(2):  # twice, so ``%2574oken`` is caught as well
+        name = unquote(name)
     words = [word.lower() for word in _KEY_TOKENS.findall(name)]
     return bool(set(words) & _SECRET_WORDS) or ''.join(words) in _SECRET_NAMES
 
 
 def _mask_param(match: re.Match[str]) -> str:
     sep, name, value = match.groups()
-    return f'{sep}{name}=***' if _is_secret_param(name) else match.group(0)
+    if not _is_secret_param(name):
+        return match.group(0)
+    # A path parameter (``;jsessionid=...``) ends at the next ``/`` or ``?``. Anything else runs to ``&``, ``#`` or ``;``.
+    tail = ''
+    if sep == ';':
+        end = min((value.find(ch) for ch in '/?' if ch in value), default=-1)
+        if end >= 0:
+            value, tail = value[:end], match.group(3)[end:]
+    return f'{sep}{name}=***{tail}'
 
 
 class ApprovalSummaryRefused(ValueError):
@@ -106,6 +126,16 @@ def _fit(text: str, limit: int) -> str:
         kept.append(ch)
         used += width
     return ''.join(kept).rstrip() + '...'
+
+
+def _has_address(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_ADDRESS.search(value))
+    if isinstance(value, dict):
+        return any(_has_address(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_address(item) for item in value)
+    return False
 
 
 def _argument_pairs(arguments: dict[str, Any]) -> list[tuple[str | None, str, Any]]:
@@ -211,12 +241,18 @@ def summarize_arguments(
             rest = redact({key: rest})[key]
         text = rest if isinstance(rest, str) else json.dumps(_mask_all(rest), sort_keys=True, default=str, ensure_ascii=True)
         others[_unique(_fit(key, _KEY_MAX), others)] = _fit(mask_url_secrets(text), _OTHER_VALUE_MAX)
-    parts: list[str] = []
+    warning = None
     if not destinations_declared:
-        parts.append(UNDECLARED_WARNING)
+        warning = UNDECLARED_WARNING
+    elif not destination_paths(input_schema) and any(_has_address(value) for _, _, value in _argument_pairs(arguments)):
+        # Declared, yet nothing is marked, and an argument holds an address: the marking is probably missing.
+        warning = NO_MARKERS_WARNING
+    parts: list[str] = []
+    if warning:
+        parts.append(warning)
     if destinations:
         text = 'Destinations: ' + json.dumps(destinations, ensure_ascii=True)
-        if len(text) > max_length - _RESERVED_FOR_OTHERS - len(UNDECLARED_WARNING) * (not destinations_declared):
+        if len(text) > max_length - _RESERVED_FOR_OTHERS - len(warning or ''):
             raise ApprovalSummaryTooLong(f'The destinations take {len(text)} characters and do not fit in the approval line.')
         parts.append(text)
     if others:
