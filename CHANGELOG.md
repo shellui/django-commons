@@ -29,6 +29,10 @@ See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog
 
 - `django` is pinned to 6.1.3 and `djangorestframework` to 3.18.3. A service that upgrades to the next release moves to Django 6.1.
 
+### 🐛 Bug Fixes
+
+- MCP tool schemas keep a blank-allowed `SlugField` or `URLField` as a string. drf-spectacular 0.30 describes those fields as `oneOf` a string and an empty string, which the tool builder used to turn into a free-form JSON object.
+
 ### 🏗 Chore
 
 - Python 3.15 in `.python-version`. CI runs the tests on Python 3.14 and 3.15, and the package still supports Python 3.14 and later.
