@@ -166,8 +166,32 @@ On JSON schema properties in request or response bodies:
 |-----------|--------|
 | `x-mcp-secret: true` | Field is always redacted in logs and MCP responses. |
 | `x-mcp-sensitive: true` | Redacted unless the agent token has `mcp_read: sensitive`. |
+| `x-mcp-destination: true` | The value says where the call sends data (an address, URL, host, domain or origin). The gateway shows it first, in full, in the approval prompt. |
 
 Keys ending in `_hint` are always redacted. Names matching `(password|secret|token|authorization|api_key|...)` are redacted. Email-like strings are redacted when `mcp_read` is not `sensitive`.
+
+### Destination fields
+
+Mark every field that holds a place the call reaches or tells someone about (a webhook URL, an email recipient, a redirect, an allowed origin or host, a sending domain) with `x-mcp-destination: true`. Use the serializer fields in `shellui_django.mcp.fields` (`McpDestinationCharField`, `McpDestinationEmailField`, `McpDestinationURLField`). For a list, use `serializers.ListField(child=McpDestinationEmailField())`: the marker lands on the list items. `tools_from_schema` keeps the marker on the tool's `inputSchema` property, including nested properties and array items. Do not strip it in the service.
+
+The marker is valid on a string, an array of strings, or the string items of one, reached through `properties` and `items`. A marker anywhere else (under `oneOf`, `anyOf`, `allOf`, `additionalProperties`, `patternProperties`, on an object or a number, or with a value other than `true`) would be ignored at runtime, so `tools_from_schema` raises `DestinationMarkerError` when the schema is built, which fails the service at startup and in its tests.
+
+`tools_from_schema(schema, destinations_declared=True)` writes `_meta.destinations_declared`. Pass it once the service's contract test runs the lint below. A gateway shows a warning on the approval line of any tool without it.
+
+`shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500, destinations_declared=False, redact=None)` builds the approval line from those markers:
+
+- Marked values come first, in full, as `Destinations: {"<label>": "<value>"}`. The label is built from the schema path (`audience.emails[1]`, `contacts[0].email`), never from a key the caller sent, and a repeated label gets ` #2`, so nothing is lost to a collision. Each list item has its own label. A marked array marks every item.
+- A name that two sections declare (`query.url` and `body.url`), or that is sent flat, is checked against every declaration: an unmarked one cannot hide a marked one.
+- A marked property that receives an object, or a list holding objects, raises `ApprovalSummaryRefused`. If the marked values do not fit in the line, `ApprovalSummaryTooLong` (a subclass) is raised. Refuse the call; do not shorten a destination.
+- Non-ASCII and control characters are shown as escapes (a lookalike letter shows as `\u0430`). `user:pass@` and credential-looking query or fragment parameters (`?token=`, `?key=`, `?sig=`, `?secret=`, `#access_token=` and similar) are shown as `***` in every value. A parameter is masked when a word of its name (split on punctuation and camelCase) is a credential word (`token`, `secret`, `key`, `sig`, `pw`, `hmac` and similar), or its whole name is a known run-together form such as `accesstoken`, `apitoken`, `oauthtoken`, `auth` or `jsessionid` (also as a `;jsessionid=` path parameter). A percent-encoded name (`%74oken`) is decoded before matching. `?auth_url=`, `?authurl=` and `?keyword=` stay visible.
+- Every other value is cut on its own (60 characters) under `Arguments:`. `redact`, if given, hides secret-looking values in those other values only. Destinations are taken out first and never pass through it.
+- `destinations_declared` defaults to `False` (fail closed): the line starts with a warning unless the caller passes `True` for a tool whose service declared its destinations. A declared tool whose schema has no marker at all gets a second warning, `NO_MARKERS_WARNING`, when an argument holds an address (`scheme://...` or `name@host.tld`), since the marking is probably missing. A declared tool with no markers and no address in its arguments (a delete by id) shows no warning.
+
+`destination_paths(input_schema)` returns the dotted argument paths a tool marks (`audience.emails` for a list), so a service can pin its marked fields in a test.
+
+Contract-test lint: `shellui_django.mcp.destinations.lint_destination_names(tools, allow={})` returns problems for every string or list-of-strings argument of a write tool whose name looks like a destination (`*url`, `*uri`, `*host`, `*hostname`, `*email`, `*domain`, `*endpoint`, `*recipient`, `*dsn`, or containing `origin`, `redirect`, `callback`, `webhook`, `address`, `target`, `href`, `server`, `phone`, or `link`, `destination`, `send_to`/`sendTo`, or named `to`, `cc`, `bcc`, `reply_to`; a trailing number counts, so `url2` is caught) and is neither marked nor listed in `allow` (tool name to reviewed dotted paths). A new unmarked `callback_url` fails the service's tests. A stale `allow` entry fails too. `validate_destination_schema` counts every marker in the schema and refuses it when the summary cannot read all of them (a marker under `$ref` into `$defs`, tuple `items`, `contains`, `dependentSchemas`, `unevaluatedProperties`, `headers`, `path`, or on a section). Read-only tools are skipped.
+
+Nothing is guessed from key names at runtime. A tool whose destination fields are not marked shows them as ordinary arguments (masked and cut), so mark them.
 
 ### Read-only POST allowlist
 
@@ -310,6 +334,7 @@ When `AUTH_RATE_LIMIT_ENABLED` is true, each `agent_id` is limited using Django'
 - [ ] Views still read `company_id` from `request.auth` for fields outside tool arguments.
 - [ ] Only intentional endpoints tagged `mcp-tools`.
 - [ ] `x-mcp-secret` / `x-mcp-sensitive` set on PII and credential fields.
+- [ ] `x-mcp-destination` set on every field that holds an address, URL, host, domain or origin.
 - [ ] Read-only POST tools listed in `validate_read_only_post_tools` allowlist.
 - [ ] Approval hooks implemented for non-destructive `full` writes and for **every** destructive tool call in `full` mode.
 - [ ] `HTTP_AUTHORIZATION` on MCP requests matches what inner views expect.

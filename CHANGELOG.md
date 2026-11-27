@@ -23,6 +23,19 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.9.0] - 2026-11-27
+
+### ✨ Feature
+
+- `x-mcp-destination: true` marks a tool property that says where a call sends data. `tools_from_schema` keeps it on the tool's `inputSchema`, on nested properties and array items too. `shellui_django.mcp.fields` has `McpDestinationCharField`, `McpDestinationEmailField` and `McpDestinationURLField` to set it on a serializer field. `destination_paths(input_schema)` lists the marked paths of a tool, for service tests. The marker is checked when the tools are built: a marker that would be ignored (under `oneOf`, `anyOf`, `additionalProperties`, `patternProperties`, on an object or a number) raises `DestinationMarkerError`. `tools_from_schema(schema, destinations_declared=True)` sets `_meta.destinations_declared`. `lint_destination_names` fails a contract test for an unmarked field named like a destination. `summarize_arguments` shows every declaration of a name sent under two sections, refuses a marked field that receives an object, honours an array-level marker, masks `?token=`-style query parameters, takes a `redact` callback that never sees destinations, and warns when a tool has not declared its destinations.
+- Destination checks, second pass: the name lint also covers `to`, `cc`, `bcc`, `reply_to`, `address`, `webhook`, `target`, `href`, `server`, `hostname`, `phone` and `dsn`. `validate_destination_schema` counts every marker the same way the OpenAPI build does, so a marker it cannot read (`$ref` into `$defs`, tuple `items`, `contains`, `dependentSchemas`, `unevaluatedProperties`, `headers`, `path`) is refused. Secrets in URL fragments (`#access_token=`) are masked, parameters are matched by name or word so `?authurl=` stays visible, `summarize_arguments` now defaults to `destinations_declared=False` (fail closed), and an object sent where a list of destinations is expected is refused.
+- Release hardening and last masking and lint gaps: the build backend is pinned (`hatchling==1.33.0` in `build-system.requires`, and `requirements-build.txt` with hashes, installed with `--require-hashes --only-binary :all:`, used without build isolation for both builds), `publish-pypi.yml` is split into a read-only build-and-verify job and an `id-token` publish job that runs no repository code, masking also covers `apitoken`, `oauthtoken`, `hmac`, `pw`, `;jsessionid=` and percent-encoded names (`auth_url` stays visible), the name lint also covers `link`, `destination`, `sendTo` and `url2`, and a declared tool with no marker gets a warning when an argument holds an address.
+- `shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500)` builds the one-line summary a person reads before approving a call. Marked values come first, in full, under labels built from the schema path (never from a key the caller chose), with each list item shown on its own. Non-ASCII and control characters show as escapes, and `user:pass@` is masked in every value. Other values are cut one by one. It raises `ApprovalSummaryTooLong` when the marked values do not fit, so a caller can refuse the call instead of shortening a destination.
+
+### 🏗 Chore
+
+- The `mcp` extra now includes `drf-spectacular==0.30.0`, which every Shellui service already pins, for the new fields.
+
 ## [0.8.0] - 2026-11-27
 
 ### 🚨 Changed
