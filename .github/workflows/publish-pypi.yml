@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           uv venv --python 3.15 "${RUNNER_TEMP}/build-env"
-          uv pip install --python "${RUNNER_TEMP}/build-env" --require-hashes --no-deps -r requirements-build.txt
+          uv pip install --python "${RUNNER_TEMP}/build-env" --require-hashes --only-binary :all: --no-deps -r requirements-build.txt
 
       - name: Build
         run: uv build --no-build-isolation --python "${RUNNER_TEMP}/build-env/bin/python" --out-dir dist
