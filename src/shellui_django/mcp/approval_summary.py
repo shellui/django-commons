@@ -39,11 +39,29 @@ _REMOVED = object()
 UNDECLARED_WARNING = 'WARNING: this tool has not declared where it sends data, so check every address in the arguments.'
 # ``scheme://userinfo@`` up to the last ``@`` of the authority, which is where a URL parser ends userinfo.
 _USERINFO = re.compile(r'([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s?#]*@')
-# Query parameters that carry a credential: ``?token=...``, ``&X-Amz-Signature=...``.
-_SECRET_PARAM = re.compile(
-    r'([?&;](?:[\w.\-]*(?:token|secret|signature|password|passwd|apikey|api[_-]key|access[_-]key|auth|credential|sig|key|code)[\w.\-]*))=([^&#\s"\']*)',
-    re.IGNORECASE,
+# A ``key=value`` pair of a query string or a fragment: ``?token=...``, ``&X-Amz-Signature=...``, ``#access_token=...``.
+_PARAM = re.compile(r'([?&;#])([^=&#;\s"\'?]+)=([^&#;\s"\']*)')
+_KEY_TOKENS = re.compile(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+')
+# A parameter is a credential when one of its words is one of these (split on punctuation and camelCase), or
+# when the whole name, run together, is one of ``_SECRET_NAMES``. ``authurl`` is neither, so it stays visible.
+_SECRET_WORDS = frozenset(
+    {'token', 'secret', 'signature', 'sig', 'password', 'passwd', 'pwd', 'key', 'code', 'auth', 'authorization',
+     'credential', 'credentials', 'apikey', 'jwt', 'bearer', 'assertion', 'otp'}
 )
+_SECRET_NAMES = frozenset(
+    {'accesstoken', 'refreshtoken', 'idtoken', 'authtoken', 'sessiontoken', 'clientsecret', 'apikey', 'accesskey',
+     'secretkey', 'privatekey', 'xapikey', 'xauthtoken', 'sessionid'}
+)
+
+
+def _is_secret_param(name: str) -> bool:
+    words = [word.lower() for word in _KEY_TOKENS.findall(name)]
+    return bool(set(words) & _SECRET_WORDS) or ''.join(words) in _SECRET_NAMES
+
+
+def _mask_param(match: re.Match[str]) -> str:
+    sep, name, value = match.groups()
+    return f'{sep}{name}=***' if _is_secret_param(name) else match.group(0)
 
 
 class ApprovalSummaryRefused(ValueError):
@@ -55,8 +73,8 @@ class ApprovalSummaryTooLong(ApprovalSummaryRefused):
 
 
 def mask_url_secrets(text: str) -> str:
-    """Hide ``user:pass@`` and credential-looking query parameter values (``?token=...``) in ``text``."""
-    return _SECRET_PARAM.sub(r'\1=***', _USERINFO.sub(r'\1***@', text))
+    """Hide ``user:pass@`` and credential-looking query or fragment parameter values (``?token=...``, ``#access_token=...``)."""
+    return _PARAM.sub(_mask_param, _USERINFO.sub(r'\1***@', text))
 
 
 def _mask_all(value: Any) -> Any:
@@ -156,7 +174,7 @@ def summarize_arguments(
     input_schema: dict[str, Any] | None,
     max_length: int = 500,
     *,
-    destinations_declared: bool = True,
+    destinations_declared: bool = False,
     redact: Callable[[Any], Any] | None = None,
 ) -> str:
     """The approval line for a call. Raises ``ApprovalSummaryRefused`` (or its ``ApprovalSummaryTooLong``).
@@ -165,7 +183,8 @@ def summarize_arguments(
     ``inputSchema``. Destinations are taken out first and never pass through ``redact``, which hides
     secret-looking values in what is left. A caller sending the same name under two sections, or flat,
     is checked against every declaration of that name, so an unmarked ``query.url`` cannot hide a marked
-    ``body.url``. With ``destinations_declared`` false the line starts with a warning.
+    ``body.url``. ``destinations_declared`` defaults to false (fail closed): the line then starts with a warning, so a caller
+    passes true only for a tool whose service declared its destinations.
     """
     if not isinstance(arguments, dict):
         return ''

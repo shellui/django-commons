@@ -9,6 +9,7 @@ from typing import Any
 from shellui_django.mcp.destinations import (
     DESTINATION_MARKER,
     DestinationMarkerError,
+    kept_marker_count,
     validate_destination_schema,
 )
 from shellui_django.mcp.openapi_mcp import tool_access_flags
@@ -246,18 +247,9 @@ def _marker_count(node: Any, root: dict[str, Any], seen: frozenset[str] = frozen
     return count
 
 
-def _kept_marker_count(node: Any) -> int:
-    """Markers in a converted node, reached through ``properties`` and ``items`` only."""
-    if not isinstance(node, dict):
-        return 0
-    count = 1 if DESTINATION_MARKER in node else 0
-    count += sum(_kept_marker_count(child) for child in (node.get('properties') or {}).values())
-    return count + _kept_marker_count(node.get('items'))
-
-
 def _assert_markers_kept(raw: Any, converted: Any, root: dict[str, Any], where: str) -> None:
     """Refuse a schema whose destination markers the conversion would silently drop."""
-    if _marker_count(raw, root) != _kept_marker_count(converted):
+    if _marker_count(raw, root) != kept_marker_count(converted):
         raise DestinationMarkerError(
             f'{DESTINATION_MARKER} in {where} sits under oneOf, anyOf, additionalProperties, '
             'patternProperties or another place the approval summary cannot read. Mark a plain property instead.'

@@ -1,3 +1,5 @@
+from functools import partial
+
 from django.test import SimpleTestCase
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.plumbing import ComponentRegistry
@@ -13,6 +15,8 @@ from shellui_django.mcp.approval_summary import (
 from shellui_django.mcp.fields import McpDestinationCharField, McpDestinationEmailField, McpDestinationURLField
 from shellui_django.mcp.openapi_tools import tools_from_schema
 
+# The default is fail closed (undeclared). These tests are about the line itself, so they declare.
+_summarize = partial(summarize_arguments, destinations_declared=True)
 
 class _Audience(serializers.Serializer):
     emails = serializers.ListField(child=McpDestinationEmailField(), required=False)
@@ -85,7 +89,7 @@ class SummaryTests(SimpleTestCase):
     schema = _tool_schema()
 
     def summary(self, body, **kwargs):
-        return summarize_arguments({'method': 'POST', 'path': '/x', 'body': body}, self.schema, **kwargs)
+        return _summarize({'method': 'POST', 'path': '/x', 'body': body}, self.schema, **kwargs)
 
     def test_destinations_come_first_in_full_with_schema_labels(self):
         line = self.summary(
@@ -112,7 +116,7 @@ class SummaryTests(SimpleTestCase):
         self.assertIn('"name": "n"', line)
 
     def test_the_same_line_comes_from_a_flat_call(self):
-        flat = summarize_arguments({'name': 'n', 'to': 'a@b.example'}, self.schema)
+        flat = _summarize({'name': 'n', 'to': 'a@b.example'}, self.schema)
         nested = self.summary({'name': 'n', 'to': 'a@b.example'})
         self.assertEqual(flat, nested)
 
@@ -172,14 +176,14 @@ class SummaryTests(SimpleTestCase):
             self.assertIn(f'"{key}"', line)
 
     def test_without_markers_it_still_masks_and_cuts(self):
-        line = summarize_arguments({'url': 'https://u:p@a.example/' + 'y' * 300, 'name': 'n'}, {'type': 'object', 'properties': {}})
+        line = _summarize({'url': 'https://u:p@a.example/' + 'y' * 300, 'name': 'n'}, {'type': 'object', 'properties': {}})
         self.assertNotIn('Destinations', line)
         self.assertIn('https://***@a.example/', line)
         self.assertLessEqual(len(line), 500)
 
     def test_empty_and_odd_input(self):
-        self.assertEqual(summarize_arguments(None, self.schema), '')
-        self.assertEqual(summarize_arguments({}, self.schema), '')
-        self.assertEqual(summarize_arguments({'method': 'POST', 'path': '/x', 'headers': {'a': 'b'}}, self.schema), '')
+        self.assertEqual(_summarize(None, self.schema), '')
+        self.assertEqual(_summarize({}, self.schema), '')
+        self.assertEqual(_summarize({'method': 'POST', 'path': '/x', 'headers': {'a': 'b'}}, self.schema), '')
         self.assertLessEqual(len(self.summary({'name': 5, 'url': None, 'hosts': None, 'audience': 'x'})), 500)
         self.assertEqual(mask_url_secrets('no url here'), 'no url here')

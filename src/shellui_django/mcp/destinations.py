@@ -25,7 +25,9 @@ ENVELOPE_KEYS = frozenset({'path', 'method', 'headers'})
 # Names that look like a place data goes to. A write tool with such a field that is neither marked
 # nor on the service's allow-list fails ``lint_destination_names``.
 _DESTINATION_NAME = re.compile(
-    r'(url|uri|host|email|domain|origin|endpoint|recipient)s?$|redirect|callback|origin',
+    r'(url|uri|host|hostname|email|domain|endpoint|recipient|dsn)s?$'
+    r'|redirect|callback|origin|webhook|address|target|href|server|phone'
+    r'|(^|[_\-.])(to|cc|bcc)$|reply[_\-]?to',
     re.IGNORECASE,
 )
 _UNSUPPORTED_KEYS = frozenset(
@@ -90,12 +92,39 @@ def _is_string_node(node: Any) -> bool:
     return isinstance(node, dict) and _type_names(node) == {'string'}
 
 
+def count_markers(node: Any) -> int:
+    """Every ``x-mcp-destination`` key anywhere under ``node``: ``$defs``, tuple ``items``, ``contains``,
+    ``dependentSchemas``, ``unevaluatedProperties``, headers, path and every other keyword included."""
+    if isinstance(node, dict):
+        return sum((1 if key == DESTINATION_MARKER else 0) + count_markers(value) for key, value in node.items())
+    if isinstance(node, list):
+        return sum(count_markers(item) for item in node)
+    return 0
+
+
+def kept_marker_count(node: Any) -> int:
+    """Markers the approval summary can read: on ``node``, or reached through ``properties`` and ``items``."""
+    if not isinstance(node, dict):
+        return 0
+    count = 1 if DESTINATION_MARKER in node else 0
+    count += sum(kept_marker_count(child) for child in properties(node).values())
+    return count + kept_marker_count(node.get('items'))
+
+
+def readable_marker_count(input_schema: dict[str, Any] | None) -> int:
+    """Markers in a tool ``inputSchema`` that the summary reads: under an argument (flat, or in ``path_params``,
+    ``query`` or ``body``), never on a section itself, ``path``, ``method`` or ``headers``."""
+    return sum(kept_marker_count(node) for nodes in declarations(input_schema)[0].values() for node in nodes)
+
+
 def validate_destination_schema(input_schema: dict[str, Any], *, tool: str = '') -> None:
     """Raise ``DestinationMarkerError`` when a marker sits where the summary would ignore it.
 
-    The marker must be on a string, an array of strings, or the string items of one, reached through
-    ``properties`` and ``items`` only. Under ``oneOf``, ``anyOf``, ``allOf``, ``additionalProperties``,
-    ``patternProperties`` or ``$ref`` it is refused.
+    The marker must be ``true`` on a string, an array of strings, or the string items of one, reached
+    through ``properties`` and ``items`` only, under an argument. Every marker in the schema is counted
+    (the same count the OpenAPI build uses) and compared with the markers the summary can read, so a
+    placement this module never walks (``$ref`` into ``$defs``, tuple ``items``, ``contains``,
+    ``dependentSchemas``, ``unevaluatedProperties``, ``headers``, ``path``, a section node) is refused too.
     """
     where = f' in tool {tool}' if tool else ''
 
@@ -116,7 +145,14 @@ def validate_destination_schema(input_schema: dict[str, Any], *, tool: str = '')
         if isinstance(node.get('items'), dict):
             walk(node['items'], f'{path}[]')
 
-    walk(input_schema, '$')
+    for name, nodes in declarations(input_schema)[0].items():
+        for node in nodes:
+            walk(node, name)
+    if count_markers(input_schema) != readable_marker_count(input_schema):
+        raise DestinationMarkerError(
+            f'{DESTINATION_MARKER}{where} sits where the approval summary cannot read it (under $ref or $defs, tuple items, '
+            'contains, dependentSchemas, unevaluatedProperties, headers, path, or on a section). Mark a plain argument instead.'
+        )
 
 
 def _contains_marker(value: Any) -> bool:

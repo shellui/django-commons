@@ -1,5 +1,7 @@
 """Collision-proof labels, array-level markers, refused placements, and the contract-test lint."""
 
+from functools import partial
+
 from django.test import SimpleTestCase
 
 from shellui_django.mcp.approval_summary import (
@@ -11,7 +13,9 @@ from shellui_django.mcp.approval_summary import (
 )
 from shellui_django.mcp.destinations import (
     DestinationMarkerError,
+    count_markers,
     lint_destination_names,
+    readable_marker_count,
     validate_destination_schema,
 )
 from shellui_django.mcp.openapi_tools import tools_from_schema
@@ -49,6 +53,9 @@ def _document(body_properties: dict, *, query: list | None = None) -> dict:
     }
 
 
+# The default is fail closed (undeclared). These tests are about the line itself, so they declare.
+_summarize = partial(summarize_arguments, destinations_declared=True)
+
 class LabelTests(SimpleTestCase):
     def test_an_unmarked_query_url_cannot_shadow_a_marked_body_url(self):
         schema = _sectioned(query={'url': S}, body={'url': D})
@@ -58,24 +65,24 @@ class LabelTests(SimpleTestCase):
             {'body': {'url': 'https://attacker.example/h'}},
         ):
             with self.subTest(arguments=arguments):
-                line = summarize_arguments(arguments, schema)
+                line = _summarize(arguments, schema)
                 self.assertTrue(line.startswith('Destinations: {"url": "https://attacker.example/h"}'), line)
 
     def test_a_marked_name_in_both_sections_shows_both_with_distinct_labels(self):
         schema = _sectioned(query={'url': D}, body={'url': D})
-        line = summarize_arguments({'query': {'url': 'https://a.example/'}, 'body': {'url': 'https://b.example/'}}, schema)
+        line = _summarize({'query': {'url': 'https://a.example/'}, 'body': {'url': 'https://b.example/'}}, schema)
         self.assertIn('"url": "https://a.example/"', line)
         self.assertIn('"url #2": "https://b.example/"', line)
 
     def test_a_property_literally_named_like_a_nested_path_does_not_collide_with_it(self):
         schema = _sectioned(body={'a.b': D, 'a': {'type': 'object', 'properties': {'b': D}}})
-        line = summarize_arguments({'body': {'a.b': 'https://one.example/', 'a': {'b': 'https://two.example/'}}}, schema)
+        line = _summarize({'body': {'a.b': 'https://one.example/', 'a': {'b': 'https://two.example/'}}}, schema)
         self.assertIn('https://one.example/', line)
         self.assertIn('https://two.example/', line)
 
     def test_nested_keys_are_labelled_from_the_schema_path_in_lists_of_objects(self):
         contacts = {'type': 'array', 'items': {'type': 'object', 'properties': {'email': D, 'name': S}}}
-        line = summarize_arguments(
+        line = _summarize(
             {'body': {'contacts': [{'email': 'a@x.example', 'name': 'A'}, {'email': 'b@x.example', 'name': 'B'}]}},
             _sectioned(body={'contacts': contacts}),
         )
@@ -85,7 +92,7 @@ class LabelTests(SimpleTestCase):
 
     def test_an_undeclared_nested_key_is_never_a_destination_label(self):
         contacts = {'type': 'array', 'items': {'type': 'object', 'properties': {'email': D}}}
-        line = summarize_arguments(
+        line = _summarize(
             {'body': {'contacts': [{'email': 'a@x.example', 'contacts[0].email': 'evil@x.example'}]}},
             _sectioned(body={'contacts': contacts}),
         )
@@ -96,19 +103,19 @@ class MarkedValueShapeTests(SimpleTestCase):
     schema = _sectioned(body={'url': D, 'name': S})
 
     def test_a_marked_string_sent_as_a_list_shows_each_item(self):
-        line = summarize_arguments({'body': {'url': ['https://a.example/', 'https://b.example/']}}, self.schema)
+        line = _summarize({'body': {'url': ['https://a.example/', 'https://b.example/']}}, self.schema)
         self.assertIn('"url[0]": "https://a.example/"', line)
         self.assertIn('"url[1]": "https://b.example/"', line)
 
     def test_a_marked_string_sent_as_an_object_or_list_of_objects_is_refused(self):
         for value in ({'x': 'https://a.example/'}, [{'x': 'https://a.example/'}], ['https://a.example/', {'y': 1}]):
             with self.subTest(value=value), self.assertRaises(ApprovalSummaryRefused):
-                summarize_arguments({'body': {'url': value}}, self.schema)
+                _summarize({'body': {'url': value}}, self.schema)
 
     def test_an_array_level_marker_is_honoured_like_destination_paths_says(self):
         schema = _sectioned(body={'hosts': {'type': 'array', 'items': S, 'x-mcp-destination': True}})
         self.assertEqual(destination_paths(schema), {'hosts'})
-        line = summarize_arguments({'body': {'hosts': ['a.example', 'b.example']}}, schema)
+        line = _summarize({'body': {'hosts': ['a.example', 'b.example']}}, schema)
         self.assertIn('"hosts[0]": "a.example"', line)
         self.assertIn('"hosts[1]": "b.example"', line)
 
@@ -142,6 +149,28 @@ class PlacementTests(SimpleTestCase):
     def test_validate_destination_schema_accepts_string_arrays_and_their_items(self):
         validate_destination_schema(_sectioned(body={'a': D, 'b': {'type': 'array', 'items': D}, 'c': {'type': ['string', 'null'], 'x-mcp-destination': True}}))
 
+    def test_the_public_check_refuses_markers_it_never_reads(self):
+        cases = {
+            '$ref into $defs': {**_sectioned(body={'a': {'$ref': '#/$defs/X'}}), '$defs': {'X': D}},
+            'tuple items': _sectioned(body={'a': {'type': 'array', 'items': [D, S]}}),
+            'contains': _sectioned(body={'a': {'type': 'array', 'contains': D}}),
+            'dependentSchemas': _sectioned(body={'a': {'type': 'object', 'dependentSchemas': {'b': {'properties': {'c': D}}}}}),
+            'unevaluatedProperties': _sectioned(body={'a': {'type': 'object', 'unevaluatedProperties': D}}),
+            'headers': {'type': 'object', 'properties': {'headers': {'type': 'object', 'properties': {'x': D}}}},
+            'path': {'type': 'object', 'properties': {'path': D}},
+            'a section node': {'type': 'object', 'properties': {'body': {**D, 'type': 'object', 'properties': {}}}},
+            'a top-level definitions entry': {**_sectioned(body={'a': S}), 'definitions': {'X': D}},
+        }
+        for name, schema in cases.items():
+            with self.subTest(name), self.assertRaises(DestinationMarkerError):
+                validate_destination_schema(schema)
+
+    def test_the_public_check_and_the_build_check_agree_on_a_supported_schema(self):
+        schema = _sectioned(body={'a': D, 'b': {'type': 'array', 'items': D}, 'c': {'type': 'object', 'properties': {'d': D}}})
+        validate_destination_schema(schema)
+        self.assertEqual(count_markers(schema), 3)
+        self.assertEqual(readable_marker_count(schema), 3)
+
     def test_tools_say_whether_their_destinations_are_declared(self):
         document = _document({'to': D})
         self.assertIs(tools_from_schema(document)[0]['_meta']['destinations_declared'], False)
@@ -152,7 +181,7 @@ class WarningAndMaskingTests(SimpleTestCase):
     schema = _sectioned(body={'token_url': D, 'credentials': {'type': 'object', 'properties': {'host': D, 'password': S}}})
 
     def test_an_undeclared_tool_starts_with_a_warning(self):
-        line = summarize_arguments({'body': {'token_url': 'https://a.example/'}}, self.schema, destinations_declared=False)
+        line = _summarize({'body': {'token_url': 'https://a.example/'}}, self.schema, destinations_declared=False)
         self.assertTrue(line.startswith(UNDECLARED_WARNING), line)
         self.assertIn('https://a.example/', line)
 
@@ -160,7 +189,7 @@ class WarningAndMaskingTests(SimpleTestCase):
         def redact(values):
             return {k: ('***' if 'token' in k or 'credential' in k else v) for k, v in values.items()}
 
-        line = summarize_arguments(
+        line = _summarize(
             {'body': {'token_url': 'https://a.example/t', 'credentials': {'host': 'smtp.evil.example', 'password': 'pw'}}},
             self.schema,
             redact=redact,
@@ -180,8 +209,35 @@ class WarningAndMaskingTests(SimpleTestCase):
         ):
             with self.subTest(url=url):
                 self.assertNotIn(secret, mask_url_secrets(url))
-                self.assertNotIn(secret, summarize_arguments({'body': {'token_url': url}}, self.schema))
+                self.assertNotIn(secret, _summarize({'body': {'token_url': url}}, self.schema))
         self.assertIn('x=1', mask_url_secrets('https://a.example/h?x=1&key=S'))
+
+    def test_secrets_in_a_url_fragment_are_masked(self):
+        for url, secret in (
+            ('https://a.example/cb#access_token=SECRET1&token_type=bearer', 'SECRET1'),
+            ('https://a.example/cb#id_token=SECRET2', 'SECRET2'),
+            ('https://a.example/cb?x=1#code=SECRET3&state=s', 'SECRET3'),
+        ):
+            with self.subTest(url=url):
+                masked = mask_url_secrets(url)
+                self.assertNotIn(secret, masked)
+                self.assertIn('=***', masked)
+        self.assertIn('state=s', mask_url_secrets('https://a.example/cb#access_token=S&state=s'))
+        self.assertEqual(mask_url_secrets('https://a.example/page#section-2'), 'https://a.example/page#section-2')
+
+    def test_parameters_are_masked_by_exact_name_or_word_not_by_substring(self):
+        for visible in ('?authurl=https://idp.example/x', '?author=ann', '?keyword=shoes', '?monkey=1', '?tokenizer=bpe', '?codec=h264', '?signal=1'):
+            with self.subTest(visible=visible):
+                self.assertEqual(mask_url_secrets('https://a.example/h' + visible), 'https://a.example/h' + visible)
+        for secret in ('?token=S', '?apiKey=S', '?api-key=S', '?X-Amz-Signature=S', '?accessToken=S', '?accesstoken=S', '?client_secret=S',
+                       '?AUTH=S', '?auth_token=S', '?Password=S', '?sig=S', '?sessionToken=S'):
+            with self.subTest(secret=secret):
+                self.assertEqual(mask_url_secrets('https://a.example/h' + secret), 'https://a.example/h' + secret.split('=')[0] + '=***')
+
+    def test_undeclared_is_the_default(self):
+        line = summarize_arguments({'body': {'token_url': 'https://a.example/'}}, self.schema)
+        self.assertTrue(line.startswith(UNDECLARED_WARNING), line)
+        self.assertFalse(summarize_arguments({'body': {'token_url': 'https://a.example/'}}, self.schema, destinations_declared=True).startswith('WARN'))
 
 
 class LintTests(SimpleTestCase):
@@ -210,6 +266,18 @@ class LintTests(SimpleTestCase):
         problems = lint_destination_names([tool])
         self.assertEqual(len(problems), 1)
         self.assertIn('extra_emails', problems[0])
+
+    def test_the_wider_names_are_caught_and_ordinary_names_are_not(self):
+        caught = ['to', 'cc', 'bcc', 'reply_to', 'replyTo', 'address', 'emailAddress', 'ip_address', 'webhook', 'webhook_secret',
+                  'target', 'target_host', 'href', 'server', 'smtp_server', 'hostname', 'phone', 'phone_number', 'dsn', 'sentry_dsn']
+        ignored = ['name', 'auto', 'photo', 'description', 'total', 'token', 'status', 'note']
+        problems = lint_destination_names([self._tool({n: S for n in caught + ignored})])
+        flagged = {problem.split(': ')[1].split(' ')[0] for problem in problems}
+        self.assertEqual(flagged, set(caught), problems)
+
+    def test_an_unmarked_webhook_fails_and_a_marked_one_passes(self):
+        self.assertEqual(len(lint_destination_names([self._tool({'webhook': S})])), 1)
+        self.assertEqual(lint_destination_names([self._tool({'webhook': D})]), [])
 
     def test_a_stale_allow_list_entry_fails(self):
         tool = self._tool({'source_email': D})

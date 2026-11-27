@@ -7,24 +7,40 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   publish:
     name: Upload to PyPI
     runs-on: ubuntu-latest
     environment: pypi
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history, so the next step can tell whether the tagged commit is on main.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tagged commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if ! git merge-base --is-ancestor "${commit}" refs/remotes/origin/main; then
+            echo "Tag ${GITHUB_REF_NAME} points at ${commit}, which is not on main. Tag a commit that is on main." >&2
+            exit 1
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
           version: '0.12.1'
           python-version: '3.15'
-          enable-cache: true
-          cache-dependency-glob: 'uv.lock'
+          # No cache in a job that can publish: nothing restored from an earlier run can end up in the package.
+          enable-cache: false
 
       - name: Check tag matches package version
         run: |
@@ -36,13 +52,13 @@ jobs:
             exit 1
           fi
 
-      - name: Sync dependencies
-        run: uv sync --frozen --all-groups
-
       - name: Build
-        run: uv build
+        run: uv build --out-dir dist
+
+      - name: Verify the build is what the tagged commit builds
+        run: python3 scripts/verify_dist.py dist "${GITHUB_SHA}" "${GITHUB_REF_NAME#v}"
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist/

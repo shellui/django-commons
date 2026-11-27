@@ -178,18 +178,18 @@ The marker is valid on a string, an array of strings, or the string items of one
 
 `tools_from_schema(schema, destinations_declared=True)` writes `_meta.destinations_declared`. Pass it once the service's contract test runs the lint below. A gateway shows a warning on the approval line of any tool without it.
 
-`shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500, destinations_declared=True, redact=None)` builds the approval line from those markers:
+`shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500, destinations_declared=False, redact=None)` builds the approval line from those markers:
 
 - Marked values come first, in full, as `Destinations: {"<label>": "<value>"}`. The label is built from the schema path (`audience.emails[1]`, `contacts[0].email`), never from a key the caller sent, and a repeated label gets ` #2`, so nothing is lost to a collision. Each list item has its own label. A marked array marks every item.
 - A name that two sections declare (`query.url` and `body.url`), or that is sent flat, is checked against every declaration: an unmarked one cannot hide a marked one.
 - A marked property that receives an object, or a list holding objects, raises `ApprovalSummaryRefused`. If the marked values do not fit in the line, `ApprovalSummaryTooLong` (a subclass) is raised. Refuse the call; do not shorten a destination.
-- Non-ASCII and control characters are shown as escapes (a lookalike letter shows as `\u0430`). `user:pass@` and credential-looking query parameters (`?token=`, `?key=`, `?sig=`, `?secret=` and similar) are shown as `***` in every value.
+- Non-ASCII and control characters are shown as escapes (a lookalike letter shows as `\u0430`). `user:pass@` and credential-looking query or fragment parameters (`?token=`, `?key=`, `?sig=`, `?secret=`, `#access_token=` and similar) are shown as `***` in every value. A parameter is masked when a word of its name (split on punctuation and camelCase) is a credential word, or its whole name is a known run-together form such as `accesstoken`. `?authurl=` and `?keyword=` stay visible.
 - Every other value is cut on its own (60 characters) under `Arguments:`. `redact`, if given, hides secret-looking values in those other values only. Destinations are taken out first and never pass through it.
-- With `destinations_declared=False` the line starts with a warning.
+- `destinations_declared` defaults to `False` (fail closed): the line starts with a warning unless the caller passes `True` for a tool whose service declared its destinations.
 
 `destination_paths(input_schema)` returns the dotted argument paths a tool marks (`audience.emails` for a list), so a service can pin its marked fields in a test.
 
-Contract-test lint: `shellui_django.mcp.destinations.lint_destination_names(tools, allow={})` returns problems for every string or list-of-strings argument of a write tool whose name looks like a destination (`*url`, `*uri`, `*host`, `*email`, `*domain`, `*origin*`, `redirect*`, `callback*`, `*endpoint`, `*recipient`) and is neither marked nor listed in `allow` (tool name to reviewed dotted paths). A new unmarked `callback_url` fails the service's tests. A stale `allow` entry fails too. Read-only tools are skipped.
+Contract-test lint: `shellui_django.mcp.destinations.lint_destination_names(tools, allow={})` returns problems for every string or list-of-strings argument of a write tool whose name looks like a destination (`*url`, `*uri`, `*host`, `*hostname`, `*email`, `*domain`, `*endpoint`, `*recipient`, `*dsn`, or containing `origin`, `redirect`, `callback`, `webhook`, `address`, `target`, `href`, `server`, `phone`, or named `to`, `cc`, `bcc`, `reply_to`) and is neither marked nor listed in `allow` (tool name to reviewed dotted paths). A new unmarked `callback_url` fails the service's tests. A stale `allow` entry fails too. `validate_destination_schema` counts every marker in the schema and refuses it when the summary cannot read all of them (a marker under `$ref` into `$defs`, tuple `items`, `contains`, `dependentSchemas`, `unevaluatedProperties`, `headers`, `path`, or on a section). Read-only tools are skipped.
 
 Nothing is guessed from key names at runtime. A tool whose destination fields are not marked shows them as ordinary arguments (masked and cut), so mark them.
 
