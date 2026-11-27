@@ -177,6 +177,20 @@ class PlacementTests(SimpleTestCase):
         self.assertIs(tools_from_schema(document, destinations_declared=True)[0]['_meta']['destinations_declared'], True)
 
 
+class ArrayOfDestinationsShapeTests(SimpleTestCase):
+    schema = _sectioned(body={'hosts': {'type': 'array', 'items': D}, 'audience': {'type': 'object', 'properties': {'emails': {'type': 'array', 'items': D}}}})
+
+    def test_an_object_sent_where_a_list_of_destinations_is_expected_is_refused(self):
+        for body in ({'hosts': {'one': 'attacker.example'}}, {'audience': {'emails': {'a': 'x@attacker.example'}}}):
+            with self.subTest(body=body), self.assertRaises(ApprovalSummaryRefused):
+                _summarize({'body': body}, self.schema)
+
+    def test_a_bare_string_sent_where_a_list_of_destinations_is_expected_is_still_shown_as_one(self):
+        line = _summarize({'body': {'hosts': 'attacker.example'}}, self.schema)
+        self.assertIn('"hosts": "attacker.example"', line)
+        self.assertNotIn('Arguments', line)
+
+
 class WarningAndMaskingTests(SimpleTestCase):
     schema = _sectioned(body={'token_url': D, 'credentials': {'type': 'object', 'properties': {'host': D, 'password': S}}})
 

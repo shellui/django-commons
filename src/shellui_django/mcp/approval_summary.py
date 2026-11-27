@@ -129,7 +129,8 @@ def _split(value: Any, node: Any, label: str, marked: bool, out: list[tuple[str,
     object, or an array holding objects, cannot be shown faithfully, so the call is refused.
     """
     node = node if isinstance(node, dict) else {}
-    marked = marked or is_marked(node)
+    # A marker on the items of an array marks the property too: an object or a bare string sent there is a destination.
+    marked = marked or is_marked(node) or is_marked(node.get('items'))
     if marked:
         if value is None:
             return _REMOVED
