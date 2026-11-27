@@ -60,6 +60,10 @@ def _is_null_variant(node: Any) -> bool:
     return isinstance(enum, list) and len(enum) > 0 and all(v is None for v in enum)
 
 
+def _is_blank_string_variant(node: dict[str, Any]) -> bool:
+    return node.get('type') == 'string' and node.get('maxLength') == 0 and set(node) <= {'type', 'maxLength'}
+
+
 def _enum_type(values: list[Any]) -> str | None:
     non_null = [v for v in values if v is not None]
     if not non_null:
@@ -128,6 +132,12 @@ def _flatten(node: dict[str, Any], root: dict[str, Any], seen: frozenset[str]) -
                     continue
                 nullable = nullable or var_null
                 kept.append(flat)
+            if len(kept) > 1:
+                # drf-spectacular 0.30+: a blank-allowed CharField subclass is
+                # oneOf [{type: string, pattern|format}, {type: string, maxLength: 0}].
+                non_blank = [v for v in kept if not _is_blank_string_variant(v)]
+                if non_blank and len(non_blank) < len(kept):
+                    kept = non_blank
             if len(kept) == 1:
                 node = {**kept[0], **siblings}
             elif kept and all(isinstance(v.get('enum'), list) for v in kept):

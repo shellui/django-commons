@@ -23,6 +23,22 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.8.0] - 2026-11-27
+
+### 🚨 Changed
+
+- **Breaking for services:** `django` is pinned to 6.1.3 and `djangorestframework` to 3.18.3. The pins are exact, so a service that upgrades to `shellui-django` 0.8.0 must move to Django 6.1.3 and DRF 3.18.3 in the same change, or dependency resolution fails. Django 6.1 deprecates the `EMAIL_*` settings, `get_connection`, `fail_silently` and `send_mail(connection=...)`, so services that send mail should run their tests with warnings on.
+
+### 🐛 Bug Fixes
+
+- MCP tool schemas keep a blank-allowed `SlugField` or `URLField` as a string. drf-spectacular 0.30 describes those fields as `oneOf` a string and an empty string, which the tool builder used to turn into a free-form JSON object.
+
+### 🏗 Chore
+
+- Classifiers for Django 6.1 and Python 3.15. Python 3.15 in `.python-version`. CI runs the tests on Python 3.14 and 3.15, and the package still supports Python 3.14 and later.
+- ruff 0.17.6 in the lockfile.
+- GitHub Actions: actions/checkout v7, astral-sh/setup-uv v10.4.0.
+
 ## [0.7.2] - 2026-11-25
 
 ### ✨ Feature
