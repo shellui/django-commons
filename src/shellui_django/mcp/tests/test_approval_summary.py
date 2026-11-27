@@ -4,7 +4,12 @@ from drf_spectacular.plumbing import ComponentRegistry
 from rest_framework import serializers
 from rest_framework.views import APIView
 
-from shellui_django.mcp.approval_summary import ApprovalSummaryTooLong, destination_paths, mask_userinfo, summarize_arguments
+from shellui_django.mcp.approval_summary import (
+    ApprovalSummaryTooLong,
+    destination_paths,
+    mask_userinfo,
+    summarize_arguments,
+)
 from shellui_django.mcp.fields import McpDestinationCharField, McpDestinationEmailField, McpDestinationURLField
 from shellui_django.mcp.openapi_tools import tools_from_schema
 
