@@ -166,8 +166,22 @@ On JSON schema properties in request or response bodies:
 |-----------|--------|
 | `x-mcp-secret: true` | Field is always redacted in logs and MCP responses. |
 | `x-mcp-sensitive: true` | Redacted unless the agent token has `mcp_read: sensitive`. |
+| `x-mcp-destination: true` | The value says where the call sends data (an address, URL, host, domain or origin). The gateway shows it first, in full, in the approval prompt. |
 
 Keys ending in `_hint` are always redacted. Names matching `(password|secret|token|authorization|api_key|...)` are redacted. Email-like strings are redacted when `mcp_read` is not `sensitive`.
+
+### Destination fields
+
+Mark every field that holds a place the call reaches or tells someone about (a webhook URL, an email recipient, a redirect, an allowed origin or host, a sending domain) with `x-mcp-destination: true`. Use the serializer fields in `shellui_django.mcp.fields` (`McpDestinationCharField`, `McpDestinationEmailField`, `McpDestinationURLField`). For a list, use `serializers.ListField(child=McpDestinationEmailField())`: the marker lands on the list items. `tools_from_schema` keeps the marker on the tool's `inputSchema` property, including nested properties and array items.
+
+`shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500)` builds the approval line from those markers:
+
+- Marked values come first, in full, as `Destinations: {"<label>": "<value>"}`. The label is built from the schema path (`audience.emails[1]`), never from a key the caller sent, so a caller cannot spoof or collide with it. Each list item has its own label.
+- Non-ASCII and control characters are shown as escapes (a lookalike letter shows as `\u0430`), and `user:pass@` in any URL, in any value, is shown as `***@`.
+- Every other value is cut on its own (60 characters) under `Arguments:`, so one long argument cannot push another out of view.
+- If the marked values do not fit in the line, `ApprovalSummaryTooLong` is raised. Refuse the call; do not shorten a destination.
+
+Nothing is guessed from key names. A tool whose destination fields are not marked shows them as ordinary arguments (masked and cut), so mark them.
 
 ### Read-only POST allowlist
 
@@ -310,6 +324,7 @@ When `AUTH_RATE_LIMIT_ENABLED` is true, each `agent_id` is limited using Django'
 - [ ] Views still read `company_id` from `request.auth` for fields outside tool arguments.
 - [ ] Only intentional endpoints tagged `mcp-tools`.
 - [ ] `x-mcp-secret` / `x-mcp-sensitive` set on PII and credential fields.
+- [ ] `x-mcp-destination` set on every field that holds an address, URL, host, domain or origin.
 - [ ] Read-only POST tools listed in `validate_read_only_post_tools` allowlist.
 - [ ] Approval hooks implemented for non-destructive `full` writes and for **every** destructive tool call in `full` mode.
 - [ ] `HTTP_AUTHORIZATION` on MCP requests matches what inner views expect.

@@ -10,6 +10,7 @@ from shellui_django.mcp.openapi_mcp import tool_access_flags
 from shellui_django.mcp.routing import path_parameter_names
 
 MCP_TOOL_TAG = 'mcp-tools'
+DESTINATION_MARKER = 'x-mcp-destination'
 
 
 def _components(root: dict[str, Any]) -> dict[str, Any]:
@@ -159,7 +160,20 @@ def _client_prop_schema(
     root: dict[str, Any] | None = None,
     _seen: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    """JSON Schema fragment safe for strict MCP clients."""
+    """JSON Schema fragment safe for strict MCP clients. Keeps ``x-mcp-destination`` on the property."""
+    out = _client_prop_core(node, root, _seen)
+    if isinstance(node, dict):
+        flat, _, _ = _flatten(node, root or {}, _seen or frozenset())
+        if flat.get(DESTINATION_MARKER) is True:
+            out[DESTINATION_MARKER] = True
+    return out
+
+
+def _client_prop_core(
+    node: Any,
+    root: dict[str, Any] | None = None,
+    _seen: frozenset[str] | None = None,
+) -> dict[str, Any]:
     if not isinstance(node, dict):
         return {'type': 'string'}
     root = root or {}
