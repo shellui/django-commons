@@ -45,7 +45,7 @@ def main(dist: Path, commit: str, version: str) -> int:
     if run('git', 'status', '--porcelain', '--ignored=no').strip():
         problems.append('the checkout has modified or untracked files')
 
-    built = sorted(path for path in dist.iterdir() if path.is_file())
+    built = sorted(path for path in dist.iterdir() if path.is_file() and not path.name.startswith('.'))
     sdists = [path for path in built if path.name.endswith('.tar.gz')]
     wheels = [path for path in built if path.name.endswith('.whl')]
     if len(sdists) != 1 or len(wheels) != 1 or len(built) != 2:
@@ -76,7 +76,7 @@ def main(dist: Path, commit: str, version: str) -> int:
                     problems.append(f'{path.name} is not produced by a clean build of {full}')
                 elif sha256(path) != sha256(other):
                     problems.append(f'{path.name} differs from a clean build of {full}: {sha256(path)} != {sha256(other)}')
-            for path in sorted(rebuilt.iterdir()):
+            for path in sorted(p for p in rebuilt.iterdir() if not p.name.startswith('.')):
                 if not (dist / path.name).is_file():
                     problems.append(f'a clean build also produces {path.name}, which is not in {dist}')
 
