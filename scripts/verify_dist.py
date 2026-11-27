@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Check that the built distributions are exactly what the tagged commit builds.
 
-usage: verify_dist.py <dist-dir> <commit> <version>
+usage: <build-venv>/bin/python verify_dist.py <dist-dir> <commit> <version>
+
+Run it with the python of the pinned build environment (``requirements-build.txt``, installed with
+``--require-hashes``). Both builds use that environment without build isolation, so neither one
+trusts a fresh unpinned copy of the build backend.
 
 The release job builds from its checkout. This script then builds the same commit again from a clean
 ``git archive`` export (no untracked, ignored or modified files, no CI cache) and requires both builds to
@@ -69,7 +73,7 @@ def main(dist: Path, commit: str, version: str) -> int:
             with tarfile.open(fileobj=io.BytesIO(export)) as archive:
                 archive.extractall(source, filter='data')
             rebuilt = Path(tmp) / 'dist'
-            run('uv', 'build', '--out-dir', str(rebuilt), cwd=source)
+            run('uv', 'build', '--no-build-isolation', '--python', sys.executable, '--out-dir', str(rebuilt), cwd=source)
             for path in built:
                 other = rebuilt / path.name
                 if not other.is_file():
