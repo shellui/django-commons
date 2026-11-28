@@ -23,6 +23,27 @@ Breaking changes bump the major version (minor while below 1.0.0), so services c
 See for sample https://raw.githubusercontent.com/favoloso/conventional-changelog-emoji/master/CHANGELOG.md
 -->
 
+## [0.9.0] - 2026-11-28
+
+### ✨ Feature
+
+- `x-mcp-destination: true` marks a tool property that says where a call sends data (a URL, an email, a host, a redirect target). `tools_from_schema` keeps it on the tool's `inputSchema`, on nested properties and on array items. `shellui_django.mcp.fields` has `McpDestinationCharField`, `McpDestinationEmailField` and `McpDestinationURLField` to set it on a serializer field, and `destination_paths(input_schema)` lists the marked paths of a tool, for service tests.
+- The marker is checked when the tools are built. A marker the approval summary cannot read (under `oneOf`, `anyOf`, `allOf`, `additionalProperties`, `patternProperties`, `$ref` into `$defs`, tuple `items`, `contains`, `dependentSchemas`, `unevaluatedProperties`, under `headers` or `path`, or on an object or a number) raises `DestinationMarkerError`. `validate_destination_schema` runs the same count for a service that builds its own schema.
+- `tools_from_schema(schema, destinations_declared=True)` sets `_meta.destinations_declared`, so a service says that it has marked its destinations.
+- `shellui_django.mcp.approval_summary.summarize_arguments(arguments, input_schema, max_length=500, *, destinations_declared=False, redact=None)` builds the one-line summary a person reads before approving a call:
+  - marked values come first, in full, under labels built from the schema path (never from a key the caller chose), each list item on its own, and an array-level marker marks its items;
+  - a name sent under two sections or flat is checked against every declaration, so an unmarked field cannot hide a marked one;
+  - a marked field that receives an object is refused with `ApprovalSummaryRefused`, and destinations that do not fit raise `ApprovalSummaryTooLong`, so a caller refuses the call instead of shortening a destination;
+  - non-ASCII and control characters show as escapes, `user:pass@` is masked in every value, and credential-looking query and fragment parameters (`?token=`, `#access_token=`, `;jsessionid=`, percent-encoded names included) are masked by name or by word, so `?auth_url=` stays visible;
+  - other values are cut one by one, and a `redact` callback masks them without ever seeing a destination;
+  - the line starts with a warning when `destinations_declared` is false (the default), and when a tool that declared its destinations has no marker and an argument holds an address.
+- `shellui_django.mcp.destinations.lint_destination_names(tools, allow=...)` is a check for a service's contract test. It fails on a write-tool field whose name looks like a destination (`url`, `uri`, `host`, `hostname`, `email`, `domain`, `endpoint`, `recipient`, `dsn`, numbered forms such as `url2`, names containing `redirect`, `callback`, `origin`, `webhook`, `address`, `target`, `href`, `server`, `phone`, `link` or `destination`, and `to`, `cc`, `bcc`, `reply_to`, `send_to`) that is neither marked nor on an allow-list with a reason. A stale allow-list entry fails too.
+
+### 🏗 Chore
+
+- The `mcp` extra now includes `drf-spectacular==0.30.0`, which every Shellui service already pins, for the new fields.
+- Release workflow: the build backend is pinned (`hatchling==1.33.0` in `build-system.requires`, and `requirements-build.txt` with hashes, installed with `--require-hashes --only-binary :all:` and used without build isolation). `publish-pypi.yml` has a read-only build-and-verify job and a publish job with `id-token: write` that runs no repository code. The build job checks that the tagged commit is on main and that a clean rebuild of the commit gives byte-identical files (`scripts/verify_dist.py`). Every action is pinned to a commit SHA.
+
 ## [0.8.0] - 2026-11-27
 
 ### 🚨 Changed
